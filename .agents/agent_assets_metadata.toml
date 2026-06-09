@@ -1,0 +1,14 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "v4rC8ZEaIERv0VjBeQJUD"
+uri = "file://artifacts/recruit-iq/public/hero.png"
+type = "image"
+title = "Dark AI recruiting hero image"
+
+[[generated]]
+id = "5mK9Q5ahLu9QRXsZicWka"
+uri = "file://artifacts/recruit-iq/public/funnel.png"
+type = "image"
+title = "AI candidate funnel visualization"

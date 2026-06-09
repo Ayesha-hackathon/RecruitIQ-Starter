@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "RecruitIQ AI"
+version = "1.0.0"
+id = "artifacts/recruit-iq"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22600
+
+[services.development]
+run = "pnpm --filter @workspace/recruit-iq run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/recruit-iq", "run", "build" ]
+publicDir = "artifacts/recruit-iq/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22600"
+BASE_PATH = "/"
