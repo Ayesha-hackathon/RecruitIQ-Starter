@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { Link } from "wouter";
 import { 
   ArrowRight, 
   BrainCircuit, 
@@ -51,12 +52,16 @@ export default function Home() {
             <a href="#dashboard" className="hover:text-white transition-colors">Dashboard</a>
           </div>
           <div className="flex items-center gap-4">
-            <Button variant="ghost" className="text-white hover:text-white hover:bg-white/10 hidden md:inline-flex">
-              Login
-            </Button>
-            <Button className="bg-primary text-primary-foreground hover:bg-primary/90 font-semibold px-6">
-              Get Started
-            </Button>
+            <Link href="/login">
+              <Button variant="ghost" className="text-white hover:text-white hover:bg-white/10 hidden md:inline-flex">
+                Login
+              </Button>
+            </Link>
+            <Link href="/signup">
+              <Button className="bg-primary text-primary-foreground hover:bg-primary/90 font-semibold px-6">
+                Get Started
+              </Button>
+            </Link>
           </div>
         </div>
       </nav>
