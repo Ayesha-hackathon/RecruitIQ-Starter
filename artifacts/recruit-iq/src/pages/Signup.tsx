@@ -33,20 +33,37 @@ export default function Signup() {
     }
 
     setLoading(true);
-    const { error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: fullName },
-      },
-    });
-    setLoading(false);
+    console.info("[RecruitIQ] Attempting signup for:", email);
 
-    if (authError) {
-      setError(authError.message);
-    } else {
-      setSuccess(true);
-      setTimeout(() => setLocation("/candidate-dashboard"), 2500);
+    try {
+      const { data, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name: fullName } },
+      });
+
+      console.info("[RecruitIQ] signUp response — error:", authError, "data:", data);
+
+      if (authError) {
+        console.error("[RecruitIQ] signUp authError:", {
+          message: authError.message,
+          status: authError.status,
+          name: authError.name,
+        });
+        setError(authError.message);
+      } else {
+        setSuccess(true);
+        setTimeout(() => setLocation("/candidate-dashboard"), 2500);
+      }
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? `${err.name}: ${err.message}`
+          : "An unexpected error occurred.";
+      console.error("[RecruitIQ] signUp threw an exception:", err);
+      setError(message);
+    } finally {
+      setLoading(false);
     }
   };
 
