@@ -1,14 +1,77 @@
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { motion } from "framer-motion";
-import { BrainCircuit, Eye, EyeOff, Mail, Lock, User } from "lucide-react";
+import { BrainCircuit, Eye, EyeOff, Mail, Lock, User, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { supabase } from "@/lib/supabase";
 
 export default function Signup() {
+  const [, setLocation] = useLocation();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+
+    setLoading(true);
+    const { error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: fullName },
+      },
+    });
+    setLoading(false);
+
+    if (authError) {
+      setError(authError.message);
+    } else {
+      setSuccess(true);
+      setTimeout(() => setLocation("/candidate-dashboard"), 2500);
+    }
+  };
+
+  if (success) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-6">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center max-w-sm"
+        >
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ type: "spring", stiffness: 300, damping: 20 }}
+            className="w-20 h-20 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center mx-auto mb-6"
+          >
+            <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+          </motion.div>
+          <h2 className="text-2xl font-bold text-white mb-2 font-[Space_Grotesk]">Account created!</h2>
+          <p className="text-muted-foreground">Check your email to confirm your account. Redirecting to your dashboard...</p>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground flex">
@@ -67,7 +130,19 @@ export default function Signup() {
           <h1 className="text-3xl font-bold text-white mb-2 font-[Space_Grotesk]">Create your account</h1>
           <p className="text-muted-foreground mb-8">Start hiring smarter in minutes. No credit card required.</p>
 
-          <div className="space-y-5">
+          {/* Error banner */}
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive mb-6 text-sm"
+            >
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              {error}
+            </motion.div>
+          )}
+
+          <form onSubmit={handleSignup} className="space-y-5">
             <div className="space-y-2">
               <Label className="text-white/80 text-sm">Full Name</Label>
               <div className="relative">
@@ -75,6 +150,9 @@ export default function Signup() {
                 <Input
                   type="text"
                   placeholder="Jane Smith"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  required
                   className="pl-10 h-12 bg-white/[0.04] border-white/10 text-white placeholder:text-muted-foreground focus:border-primary/50"
                   data-testid="input-fullname"
                 />
@@ -88,6 +166,9 @@ export default function Signup() {
                 <Input
                   type="email"
                   placeholder="you@company.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
                   className="pl-10 h-12 bg-white/[0.04] border-white/10 text-white placeholder:text-muted-foreground focus:border-primary/50"
                   data-testid="input-email"
                 />
@@ -101,6 +182,9 @@ export default function Signup() {
                 <Input
                   type={showPassword ? "text" : "password"}
                   placeholder="Min. 8 characters"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
                   className="pl-10 pr-10 h-12 bg-white/[0.04] border-white/10 text-white placeholder:text-muted-foreground focus:border-primary/50"
                   data-testid="input-password"
                 />
@@ -121,6 +205,9 @@ export default function Signup() {
                 <Input
                   type={showConfirm ? "text" : "password"}
                   placeholder="Re-enter your password"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  required
                   className="pl-10 pr-10 h-12 bg-white/[0.04] border-white/10 text-white placeholder:text-muted-foreground focus:border-primary/50"
                   data-testid="input-confirm-password"
                 />
@@ -134,15 +221,16 @@ export default function Signup() {
               </div>
             </div>
 
-            <Link href="/candidate-dashboard">
-              <Button
-                className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold text-base mt-2"
-                data-testid="button-signup"
-              >
-                Create Account
-              </Button>
-            </Link>
-          </div>
+            <Button
+              type="submit"
+              disabled={loading}
+              className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold text-base mt-2"
+              data-testid="button-signup"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {loading ? "Creating account..." : "Create Account"}
+            </Button>
+          </form>
 
           <p className="mt-4 text-xs text-center text-muted-foreground">
             By creating an account you agree to our{" "}
