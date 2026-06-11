@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/context/AuthContext";
 
 const navItems = [
   { label: "Dashboard", icon: <LayoutDashboard className="w-4 h-4" />, href: "/candidate-dashboard" },
@@ -79,7 +80,19 @@ const applications = [
 
 export default function CandidateDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
+  const { user, signOut } = useAuth();
+
+  const displayName =
+    user?.user_metadata?.full_name ||
+    user?.email?.split("@")[0] ||
+    "Account";
+  const displayEmail = user?.email ?? "";
+
+  const handleSignOut = async () => {
+    await signOut();
+    setLocation("/login");
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground flex">
@@ -104,7 +117,8 @@ export default function CandidateDashboard() {
 
         <div className="px-4 py-3 mx-4 my-4 rounded-xl bg-white/[0.03] border border-white/5">
           <div className="text-xs text-muted-foreground mb-1">Signed in as</div>
-          <div className="text-sm font-semibold text-white">Alex Morgan</div>
+          <div className="text-sm font-semibold text-white truncate">{displayName}</div>
+          <div className="text-xs text-muted-foreground truncate mt-0.5">{displayEmail}</div>
           <div className="text-xs text-primary mt-0.5">Candidate</div>
         </div>
 
@@ -125,10 +139,13 @@ export default function CandidateDashboard() {
         </nav>
 
         <div className="p-3 border-t border-white/5">
-          <Link href="/" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-all">
+          <button
+            onClick={handleSignOut}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-all"
+          >
             <LogOut className="w-4 h-4" />
             Sign Out
-          </Link>
+          </button>
         </div>
       </aside>
 
@@ -151,7 +168,13 @@ export default function CandidateDashboard() {
               <Bell className="w-5 h-5" />
               <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full" />
             </button>
-            <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-primary to-cyan-500 flex-shrink-0" />
+            <div className="hidden sm:flex flex-col items-end">
+              <span className="text-sm font-medium text-white leading-tight">{displayName}</span>
+              <span className="text-xs text-muted-foreground leading-tight">{displayEmail}</span>
+            </div>
+            <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-primary to-cyan-500 flex-shrink-0 flex items-center justify-center text-white text-sm font-bold">
+              {displayName.charAt(0).toUpperCase()}
+            </div>
           </div>
         </header>
 
