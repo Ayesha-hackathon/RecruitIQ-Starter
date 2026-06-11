@@ -45,6 +45,23 @@ export default function ResumeUpload() {
     }
   };
 
+  const friendlyError = (err: unknown): string => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("Bucket not found") || msg.includes("bucket"))
+      return "Storage bucket 'resumes' not found. Make sure it's created in Supabase Storage.";
+    if (msg.includes("row-level security") || msg.includes("policy"))
+      return "Permission denied. Check that RLS policies are configured for the resumes bucket and candidates table.";
+    if (msg.includes("does not exist") || msg.includes("relation"))
+      return "The 'candidates' table doesn't exist. Run the setup SQL in your Supabase SQL Editor.";
+    if (msg.includes("duplicate") || msg.includes("unique"))
+      return "A record conflict occurred. Please try again.";
+    if (msg.includes("JWT") || msg.includes("token"))
+      return "Session expired. Please log out and log back in.";
+    if (msg.includes("network") || msg.includes("fetch"))
+      return "Network error. Check your connection and try again.";
+    return msg || "Upload failed. Please try again.";
+  };
+
   const handleFile = async (file: File) => {
     if (!file) return;
     setError("");
@@ -85,22 +102,29 @@ export default function ResumeUpload() {
     }, 120);
 
     try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const filePath = `${user.id}/${Date.now()}_${safeName}`;
+      // Deterministic path: auth.uid()/resume.pdf — upsert replaces previous file
+      const filePath = `${user.id}/resume.pdf`;
+
+      console.info("[RecruitIQ] Uploading to storage path:", filePath);
 
       const { error: storageError } = await supabase.storage
         .from("resumes")
         .upload(filePath, file, {
           cacheControl: "3600",
-          upsert: false,
+          upsert: true,           // replaces existing file on re-upload
           contentType: "application/pdf",
         });
 
-      if (storageError) throw storageError;
+      if (storageError) {
+        console.error("[RecruitIQ] Storage error:", storageError);
+        throw storageError;
+      }
 
       const {
         data: { publicUrl },
       } = supabase.storage.from("resumes").getPublicUrl(filePath);
+
+      console.info("[RecruitIQ] File uploaded. Public URL:", publicUrl);
 
       const { error: dbError } = await supabase
         .from("candidates")
@@ -115,7 +139,12 @@ export default function ResumeUpload() {
           { onConflict: "user_id" }
         );
 
-      if (dbError) throw dbError;
+      if (dbError) {
+        console.error("[RecruitIQ] DB error:", dbError);
+        throw dbError;
+      }
+
+      console.info("[RecruitIQ] Candidate row upserted successfully.");
 
       clearProgressInterval();
       setProgress(100);
@@ -123,9 +152,8 @@ export default function ResumeUpload() {
       setTimeout(() => setUploadState("done"), 500);
     } catch (err: unknown) {
       clearProgressInterval();
-      const msg =
-        err instanceof Error ? err.message : "Upload failed. Please try again.";
-      setError(msg);
+      console.error("[RecruitIQ] Upload exception:", err);
+      setError(friendlyError(err));
       setProgress(0);
       setUploadState("error");
     }
