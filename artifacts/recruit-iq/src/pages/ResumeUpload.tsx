@@ -12,35 +12,123 @@ import {
   Sparkles,
   ShieldCheck,
   Zap,
+  AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/context/AuthContext";
 
-type UploadState = "idle" | "dragging" | "uploaded" | "analyzing" | "done";
+type UploadState = "idle" | "dragging" | "uploading" | "done" | "error";
+
+const analysisSteps = [
+  "Uploading to secure storage",
+  "Extracting skills & experience",
+  "Running skill gap analysis",
+  "Saving to your profile",
+];
 
 export default function ResumeUpload() {
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [fileName, setFileName] = useState("");
   const [fileSize, setFileSize] = useState("");
   const [progress, setProgress] = useState(0);
+  const [error, setError] = useState("");
+  const [resumeUrl, setResumeUrl] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { user } = useAuth();
 
-  const handleFile = (file: File) => {
+  const clearProgressInterval = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  };
+
+  const handleFile = async (file: File) => {
     if (!file) return;
+    setError("");
+
+    if (!user) {
+      setError("You must be logged in to upload a resume.");
+      setUploadState("error");
+      return;
+    }
+
+    if (file.type !== "application/pdf") {
+      setError("Only PDF files are accepted. Please upload a .pdf file.");
+      setUploadState("error");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setError("File must be under 10 MB.");
+      setUploadState("error");
+      return;
+    }
+
     setFileName(file.name);
     setFileSize((file.size / 1024).toFixed(0) + " KB");
-    setUploadState("analyzing");
+    setUploadState("uploading");
     setProgress(0);
+    setResumeUrl("");
 
-    const interval = setInterval(() => {
+    // Animate progress to ~80% while the real upload runs in parallel
+    intervalRef.current = setInterval(() => {
       setProgress((p) => {
-        if (p >= 100) {
-          clearInterval(interval);
-          setUploadState("done");
-          return 100;
+        if (p >= 80) {
+          clearProgressInterval();
+          return 80;
         }
-        return p + 4;
+        return p + 2;
       });
-    }, 80);
+    }, 120);
+
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const filePath = `${user.id}/${Date.now()}_${safeName}`;
+
+      const { error: storageError } = await supabase.storage
+        .from("resumes")
+        .upload(filePath, file, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: "application/pdf",
+        });
+
+      if (storageError) throw storageError;
+
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("resumes").getPublicUrl(filePath);
+
+      const { error: dbError } = await supabase
+        .from("candidates")
+        .upsert(
+          {
+            user_id: user.id,
+            resume_url: publicUrl,
+            resume_path: filePath,
+            resume_filename: file.name,
+            uploaded_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" }
+        );
+
+      if (dbError) throw dbError;
+
+      clearProgressInterval();
+      setProgress(100);
+      setResumeUrl(publicUrl);
+      setTimeout(() => setUploadState("done"), 500);
+    } catch (err: unknown) {
+      clearProgressInterval();
+      const msg =
+        err instanceof Error ? err.message : "Upload failed. Please try again.";
+      setError(msg);
+      setProgress(0);
+      setUploadState("error");
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -53,21 +141,19 @@ export default function ResumeUpload() {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) handleFile(file);
+    // Reset input so the same file can be re-selected after an error
+    e.target.value = "";
   };
 
   const reset = () => {
+    clearProgressInterval();
     setUploadState("idle");
     setFileName("");
     setFileSize("");
     setProgress(0);
+    setError("");
+    setResumeUrl("");
   };
-
-  const analysisSteps = [
-    "Parsing resume structure",
-    "Extracting skills & experience",
-    "Running skill gap analysis",
-    "Generating match score",
-  ];
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -137,7 +223,7 @@ export default function ResumeUpload() {
                 <input
                   ref={inputRef}
                   type="file"
-                  accept=".pdf,.doc,.docx"
+                  accept="application/pdf,.pdf"
                   className="hidden"
                   onChange={handleInputChange}
                   data-testid="input-resume-file"
@@ -149,7 +235,7 @@ export default function ResumeUpload() {
                   {uploadState === "dragging" ? "Release to upload" : "Drag & drop your resume here"}
                 </h3>
                 <p className="text-muted-foreground mb-6">
-                  Supports PDF, DOC, DOCX — up to 10 MB
+                  PDF only — up to 10 MB
                 </p>
                 <Button
                   className="h-12 px-8 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold gap-2"
@@ -162,10 +248,10 @@ export default function ResumeUpload() {
               </motion.div>
             )}
 
-            {/* Analyzing */}
-            {uploadState === "analyzing" && (
+            {/* Uploading */}
+            {uploadState === "uploading" && (
               <motion.div
-                key="analyzing"
+                key="uploading"
                 initial={{ opacity: 0, scale: 0.97 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0 }}
@@ -178,7 +264,7 @@ export default function ResumeUpload() {
                   </div>
                 </div>
                 <h3 className="text-xl font-bold text-white mb-1">{fileName}</h3>
-                <p className="text-sm text-muted-foreground mb-8">{fileSize} · Analyzing with RecruitIQ AI...</p>
+                <p className="text-sm text-muted-foreground mb-8">{fileSize} · Uploading with RecruitIQ AI...</p>
 
                 {/* Progress bar */}
                 <div className="w-full mb-6">
@@ -189,8 +275,8 @@ export default function ResumeUpload() {
                   <div className="h-2 bg-white/5 rounded-full overflow-hidden">
                     <motion.div
                       className="h-full rounded-full bg-gradient-to-r from-primary to-cyan-400"
-                      style={{ width: `${progress}%` }}
-                      transition={{ ease: "linear" }}
+                      animate={{ width: `${progress}%` }}
+                      transition={{ ease: "linear", duration: 0.1 }}
                     />
                   </div>
                 </div>
@@ -219,6 +305,39 @@ export default function ResumeUpload() {
               </motion.div>
             )}
 
+            {/* Error */}
+            {uploadState === "error" && (
+              <motion.div
+                key="error"
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0 }}
+                className="rounded-2xl border border-destructive/20 bg-destructive/5 p-10 flex flex-col items-center text-center"
+              >
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                  className="w-20 h-20 rounded-full bg-destructive/10 border border-destructive/20 flex items-center justify-center mb-6"
+                >
+                  <AlertCircle className="w-10 h-10 text-destructive" />
+                </motion.div>
+                <h3 className="text-2xl font-bold text-white mb-2 font-[Space_Grotesk]">Upload Failed</h3>
+                {fileName && (
+                  <p className="text-muted-foreground mb-3 text-sm">{fileName}</p>
+                )}
+                <p className="text-sm text-destructive/80 mb-8 max-w-sm bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
+                  {error || "Something went wrong. Please try again."}
+                </p>
+                <Button
+                  className="h-12 px-8 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold gap-2"
+                  onClick={reset}
+                >
+                  <Upload className="w-4 h-4" /> Try Again
+                </Button>
+              </motion.div>
+            )}
+
             {/* Done */}
             {uploadState === "done" && (
               <motion.div
@@ -236,11 +355,20 @@ export default function ResumeUpload() {
                 >
                   <CheckCircle2 className="w-10 h-10 text-emerald-400" />
                 </motion.div>
-                <h3 className="text-2xl font-bold text-white mb-2 font-[Space_Grotesk]">Analysis Complete</h3>
-                <p className="text-muted-foreground mb-2">{fileName}</p>
+                <h3 className="text-2xl font-bold text-white mb-2 font-[Space_Grotesk]">Upload Complete</h3>
+
+                {/* Filename pill */}
+                <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 mb-6">
+                  <FileText className="w-4 h-4 text-primary flex-shrink-0" />
+                  <span className="text-sm text-white font-medium truncate max-w-[260px]">{fileName}</span>
+                </div>
+
+                <p className="text-sm text-muted-foreground mb-6">
+                  Saved to your profile · Ready for AI analysis
+                </p>
 
                 {/* Score */}
-                <div className="my-6 w-full max-w-sm mx-auto p-6 rounded-2xl bg-white/[0.03] border border-white/5">
+                <div className="my-2 w-full max-w-sm mx-auto p-6 rounded-2xl bg-white/[0.03] border border-white/5">
                   <div className="text-5xl font-bold text-white font-[Space_Grotesk] mb-1">87<span className="text-2xl text-muted-foreground">/100</span></div>
                   <div className="text-sm font-medium text-white mb-3">Resume Score</div>
                   <div className="h-2 bg-white/5 rounded-full overflow-hidden mb-5">
@@ -261,7 +389,7 @@ export default function ResumeUpload() {
                   </div>
                 </div>
 
-                <div className="flex gap-3 flex-col sm:flex-row w-full max-w-sm">
+                <div className="flex gap-3 flex-col sm:flex-row w-full max-w-sm mt-6">
                   <Link href="/candidate-dashboard" className="flex-1">
                     <Button className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold">
                       View Dashboard

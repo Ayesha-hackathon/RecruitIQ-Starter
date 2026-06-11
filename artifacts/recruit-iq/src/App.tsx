@@ -27,7 +27,11 @@ function Router() {
         </ProtectedRoute>
       </Route>
       <Route path="/hr-dashboard" component={HrDashboard} />
-      <Route path="/resume-upload" component={ResumeUpload} />
+      <Route path="/resume-upload">
+        <ProtectedRoute>
+          <ResumeUpload />
+        </ProtectedRoute>
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );
