@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   BrainCircuit,
   LayoutDashboard,
@@ -19,10 +19,45 @@ import {
   Menu,
   X,
   Target,
+  Sparkles,
+  Brain,
+  BookOpen,
+  Award,
+  Code2,
+  AlertCircle,
+  Loader2,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
+
+interface AnalysisEducation {
+  degree: string;
+  institution: string;
+  year: string;
+}
+
+interface AnalysisProject {
+  name: string;
+  description: string;
+}
+
+interface ResumeAnalysis {
+  skills: string[];
+  education: AnalysisEducation[];
+  projects: AnalysisProject[];
+  certifications: string[];
+  resumeScore: number;
+  summary: string;
+}
+
+interface CandidateRecord {
+  resume_url: string | null;
+  resume_filename: string | null;
+  analysis: ResumeAnalysis | null;
+}
 
 const navItems = [
   { label: "Dashboard", icon: <LayoutDashboard className="w-4 h-4" />, href: "/candidate-dashboard" },
@@ -82,6 +117,47 @@ export default function CandidateDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [location, setLocation] = useLocation();
   const { user, signOut } = useAuth();
+
+  const [candidate, setCandidate] = useState<CandidateRecord | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+
+  useEffect(() => {
+    if (!user) return;
+    supabase
+      .from("candidates")
+      .select("resume_url, resume_filename, analysis")
+      .eq("user_id", user.id)
+      .single()
+      .then(({ data }) => {
+        if (data) setCandidate(data as CandidateRecord);
+      });
+  }, [user]);
+
+  const analyzeResume = async () => {
+    if (!candidate?.resume_url) return;
+    setAnalyzing(true);
+    setAnalysisError("");
+    try {
+      const resp = await fetch("/api/analyze-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resumeUrl: candidate.resume_url }),
+      });
+      const data = await resp.json() as { analysis?: ResumeAnalysis; error?: string };
+      if (!resp.ok) throw new Error(data.error ?? "Analysis failed");
+      const analysis = data.analysis!;
+      await supabase
+        .from("candidates")
+        .update({ analysis })
+        .eq("user_id", user!.id);
+      setCandidate((prev) => prev ? { ...prev, analysis } : prev);
+    } catch (err: unknown) {
+      setAnalysisError(err instanceof Error ? err.message : "Analysis failed. Please try again.");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
 
   const displayName =
     user?.user_metadata?.full_name ||
@@ -308,7 +384,7 @@ export default function CandidateDashboard() {
             <h2 className="text-lg font-bold text-white font-[Space_Grotesk] mb-5">Interview Preparation Checklist</h2>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: "Resume reviewed by AI", done: true },
+                { label: "Resume reviewed by AI", done: !!candidate?.analysis },
                 { label: "Skills assessment sent", done: true },
                 { label: "Technical interview scheduled", done: false },
                 { label: "Hiring decision pending", done: false },
@@ -318,6 +394,214 @@ export default function CandidateDashboard() {
                   <span className={`text-sm font-medium ${step.done ? "text-white" : "text-muted-foreground"}`}>{step.label}</span>
                 </div>
               ))}
+            </div>
+          </motion.div>
+
+          {/* AI Resume Analyzer */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.6 }}
+            className="rounded-2xl border border-white/5 overflow-hidden"
+          >
+            {/* Header bar */}
+            <div className="flex items-center justify-between px-6 py-5 bg-gradient-to-r from-primary/10 via-violet-500/5 to-transparent border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-primary/15 border border-primary/20 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-white font-[Space_Grotesk]">AI Resume Analyzer</h2>
+                  <p className="text-xs text-muted-foreground">Powered by Gemini 2.5 Flash</p>
+                </div>
+              </div>
+              {candidate?.resume_url && (
+                <Button
+                  onClick={analyzeResume}
+                  disabled={analyzing}
+                  className="h-9 px-4 text-sm bg-primary hover:bg-primary/90 text-black font-semibold gap-2 disabled:opacity-60"
+                >
+                  {analyzing ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing…</>
+                  ) : candidate?.analysis ? (
+                    <><RefreshCw className="w-4 h-4" /> Re-analyze</>
+                  ) : (
+                    <><Brain className="w-4 h-4" /> Analyze Resume</>
+                  )}
+                </Button>
+              )}
+            </div>
+
+            <div className="bg-card/30 p-6">
+              {/* Error state */}
+              <AnimatePresence>
+                {analysisError && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="flex items-start gap-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20 mb-5"
+                  >
+                    <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+                    <p className="text-sm text-red-300">{analysisError}</p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* No resume uploaded yet */}
+              {!candidate?.resume_url && !analyzing && (
+                <div className="text-center py-10">
+                  <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-4">
+                    <FileText className="w-6 h-6 text-muted-foreground" />
+                  </div>
+                  <p className="text-white font-medium mb-1">No resume uploaded yet</p>
+                  <p className="text-sm text-muted-foreground mb-4">Upload your resume to unlock AI-powered analysis</p>
+                  <Link href="/resume-upload">
+                    <Button className="h-9 px-5 text-sm bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20">
+                      Upload Resume
+                    </Button>
+                  </Link>
+                </div>
+              )}
+
+              {/* Analyzing skeleton */}
+              {analyzing && (
+                <div className="space-y-4 py-2">
+                  <div className="flex items-center gap-3 mb-6">
+                    <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                    <span className="text-sm text-muted-foreground">Reading your resume and generating AI insights…</span>
+                  </div>
+                  {[80, 60, 90, 50].map((w, i) => (
+                    <div key={i} className="h-3 rounded-full bg-white/5 animate-pulse" style={{ width: `${w}%` }} />
+                  ))}
+                </div>
+              )}
+
+              {/* Has resume but not yet analyzed */}
+              {candidate?.resume_url && !candidate.analysis && !analyzing && (
+                <div className="text-center py-10">
+                  <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
+                    <Brain className="w-6 h-6 text-primary" />
+                  </div>
+                  <p className="text-white font-medium mb-1">Ready to analyze</p>
+                  <p className="text-sm text-muted-foreground">Click "Analyze Resume" above to get your AI-powered breakdown</p>
+                </div>
+              )}
+
+              {/* Analysis results */}
+              {candidate?.analysis && !analyzing && (() => {
+                const a = candidate.analysis;
+                const score = a.resumeScore ?? 0;
+                const scoreColor = score >= 80 ? "text-emerald-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
+                const scoreBarColor = score >= 80 ? "from-emerald-500 to-teal-400" : score >= 60 ? "from-yellow-500 to-amber-400" : "from-red-500 to-rose-400";
+                return (
+                  <div className="space-y-6">
+                    {/* Score + Summary row */}
+                    <div className="grid md:grid-cols-3 gap-4">
+                      {/* Score card */}
+                      <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5 flex flex-col items-center justify-center text-center">
+                        <p className="text-xs text-muted-foreground mb-2 uppercase tracking-widest">Resume Score</p>
+                        <p className={`text-5xl font-black font-[Space_Grotesk] ${scoreColor}`}>{score}</p>
+                        <p className="text-xs text-muted-foreground mt-1">out of 100</p>
+                        <div className="w-full mt-4 h-2 rounded-full bg-white/5 overflow-hidden">
+                          <motion.div
+                            initial={{ width: 0 }}
+                            animate={{ width: `${score}%` }}
+                            transition={{ duration: 0.8, ease: "easeOut" }}
+                            className={`h-full rounded-full bg-gradient-to-r ${scoreBarColor}`}
+                          />
+                        </div>
+                      </div>
+                      {/* Summary */}
+                      <div className="md:col-span-2 rounded-xl bg-white/[0.03] border border-white/5 p-5">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Sparkles className="w-4 h-4 text-primary" />
+                          <p className="text-sm font-semibold text-white">AI Summary</p>
+                        </div>
+                        <p className="text-sm text-muted-foreground leading-relaxed">{a.summary}</p>
+                      </div>
+                    </div>
+
+                    {/* Skills */}
+                    {a.skills.length > 0 && (
+                      <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <Code2 className="w-4 h-4 text-violet-400" />
+                          <p className="text-sm font-semibold text-white">Skills</p>
+                          <span className="ml-auto text-xs text-muted-foreground">{a.skills.length} detected</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {a.skills.map((skill, i) => (
+                            <span
+                              key={i}
+                              className="px-3 py-1 rounded-full text-xs font-medium bg-violet-500/10 text-violet-300 border border-violet-500/20"
+                            >
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid md:grid-cols-2 gap-4">
+                      {/* Education */}
+                      {a.education.length > 0 && (
+                        <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
+                          <div className="flex items-center gap-2 mb-4">
+                            <BookOpen className="w-4 h-4 text-cyan-400" />
+                            <p className="text-sm font-semibold text-white">Education</p>
+                          </div>
+                          <div className="space-y-3">
+                            {a.education.map((edu, i) => (
+                              <div key={i} className="flex flex-col gap-0.5">
+                                <p className="text-sm font-medium text-white">{edu.degree}</p>
+                                <p className="text-xs text-muted-foreground">{edu.institution}{edu.year ? ` · ${edu.year}` : ""}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Certifications */}
+                      {a.certifications.length > 0 && (
+                        <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Award className="w-4 h-4 text-amber-400" />
+                            <p className="text-sm font-semibold text-white">Certifications</p>
+                          </div>
+                          <div className="space-y-2">
+                            {a.certifications.map((cert, i) => (
+                              <div key={i} className="flex items-center gap-2">
+                                <div className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                                <p className="text-sm text-muted-foreground">{cert}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Projects */}
+                    {a.projects.length > 0 && (
+                      <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <Target className="w-4 h-4 text-emerald-400" />
+                          <p className="text-sm font-semibold text-white">Projects</p>
+                          <span className="ml-auto text-xs text-muted-foreground">{a.projects.length} found</span>
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          {a.projects.map((proj, i) => (
+                            <div key={i} className="p-4 rounded-lg bg-white/[0.02] border border-white/5">
+                              <p className="text-sm font-medium text-white mb-1">{proj.name}</p>
+                              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{proj.description}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </motion.div>
         </main>
