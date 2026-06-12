@@ -121,16 +121,39 @@ export default function CandidateDashboard() {
   const [candidate, setCandidate] = useState<CandidateRecord | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
+  const [loadingCandidate, setLoadingCandidate] = useState(true);
 
   useEffect(() => {
     if (!user) return;
+    setLoadingCandidate(true);
     supabase
       .from("candidates")
       .select("resume_url, resume_filename, analysis")
       .eq("user_id", user.id)
       .single()
       .then(({ data }) => {
-        if (data) setCandidate(data as CandidateRecord);
+        if (data) {
+          const raw = data as { resume_url: string | null; resume_filename: string | null; analysis: unknown };
+          // Supabase may return 'analysis' as a JSON string if the column type is 'json' (not 'jsonb').
+          // Always safely parse it to guarantee we have a plain object.
+          let analysis: ResumeAnalysis | null = null;
+          if (typeof raw.analysis === "string" && raw.analysis.trim().length > 0) {
+            try {
+              const parsed = JSON.parse(raw.analysis) as unknown;
+              // Gemini sometimes nests the result inside another 'analysis' key
+              const inner = (parsed as Record<string, unknown>)?.analysis ?? parsed;
+              analysis = inner as ResumeAnalysis;
+            } catch {
+              analysis = null;
+            }
+          } else if (raw.analysis && typeof raw.analysis === "object") {
+            const obj = raw.analysis as Record<string, unknown>;
+            // Gemini sometimes nests the result inside another 'analysis' key
+            analysis = (obj.analysis ?? obj) as ResumeAnalysis;
+          }
+          setCandidate({ resume_url: raw.resume_url, resume_filename: raw.resume_filename, analysis });
+        }
+        setLoadingCandidate(false);
       });
   }, [user]);
 
@@ -164,6 +187,9 @@ export default function CandidateDashboard() {
     user?.email?.split("@")[0] ||
     "Account";
   const displayEmail = user?.email ?? "";
+
+  // Real AI score wired to the top stat card
+  const realScore = candidate?.analysis?.resumeScore ?? null;
 
   const handleSignOut = async () => {
     await signOut();
@@ -259,32 +285,41 @@ export default function CandidateDashboard() {
 
           {/* Stat cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-            {statCards.map((card, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.08 }}
-                className="p-5 rounded-2xl bg-card/50 border border-white/5 hover:border-white/10 transition-all group relative overflow-hidden"
-              >
-                <div className={`absolute inset-0 bg-gradient-to-br ${card.color} opacity-60`} />
-                <div className="relative z-10">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center">
-                      {card.icon}
+            {statCards.map((card, i) => {
+              const isScoreCard = card.label === "Resume Score";
+              const displayValue = isScoreCard && realScore !== null ? String(realScore) : card.value;
+              const displayDelta = isScoreCard && realScore !== null ? "AI-powered score" : card.delta;
+              return (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.08 }}
+                  className="p-5 rounded-2xl bg-card/50 border border-white/5 hover:border-white/10 transition-all group relative overflow-hidden"
+                >
+                  <div className={`absolute inset-0 bg-gradient-to-br ${card.color} opacity-60`} />
+                  <div className="relative z-10">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center">
+                        {card.icon}
+                      </div>
+                      {card.trend === "up" && <TrendingUp className="w-4 h-4 text-emerald-400" />}
+                      {card.trend === "neutral" && <Clock className="w-4 h-4 text-amber-400" />}
                     </div>
-                    {card.trend === "up" && <TrendingUp className="w-4 h-4 text-emerald-400" />}
-                    {card.trend === "neutral" && <Clock className="w-4 h-4 text-amber-400" />}
+                    <div className="flex items-baseline gap-1 mb-1">
+                      {isScoreCard && loadingCandidate ? (
+                        <div className="h-8 w-12 rounded bg-white/10 animate-pulse" />
+                      ) : (
+                        <span className="text-3xl font-bold text-white font-[Space_Grotesk]">{displayValue}</span>
+                      )}
+                      {card.unit && <span className="text-sm text-muted-foreground">{card.unit}</span>}
+                    </div>
+                    <div className="text-sm font-medium text-white mb-1">{card.label}</div>
+                    <div className="text-xs text-muted-foreground">{displayDelta}</div>
                   </div>
-                  <div className="flex items-baseline gap-1 mb-1">
-                    <span className="text-3xl font-bold text-white font-[Space_Grotesk]">{card.value}</span>
-                    {card.unit && <span className="text-sm text-muted-foreground">{card.unit}</span>}
-                  </div>
-                  <div className="text-sm font-medium text-white mb-1">{card.label}</div>
-                  <div className="text-xs text-muted-foreground">{card.delta}</div>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              );
+            })}
           </div>
 
           {/* Applications table + Resume score */}
@@ -491,114 +526,207 @@ export default function CandidateDashboard() {
               {/* Analysis results */}
               {candidate?.analysis && !analyzing && (() => {
                 const a = candidate.analysis;
-                const score = a.resumeScore ?? 0;
-                const scoreColor = score >= 80 ? "text-emerald-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
-                const scoreBarColor = score >= 80 ? "from-emerald-500 to-teal-400" : score >= 60 ? "from-yellow-500 to-amber-400" : "from-red-500 to-rose-400";
+
+                // Defensive extraction — guards against string/undefined fields
+                // if Supabase returns a partially-formed or un-parsed object.
+                const score = typeof a.resumeScore === "number" ? a.resumeScore : 0;
+                const summary = typeof a.summary === "string" ? a.summary.trim() : "";
+                const skills = Array.isArray(a.skills) ? a.skills.filter(Boolean) : [];
+                const education = Array.isArray(a.education) ? a.education.filter(Boolean) : [];
+                const projects = Array.isArray(a.projects) ? a.projects.filter(Boolean) : [];
+                const certifications = Array.isArray(a.certifications) ? a.certifications.filter(Boolean) : [];
+
+                const scoreLabel = score >= 85 ? "Excellent" : score >= 70 ? "Strong" : score >= 55 ? "Good" : "Needs Work";
+                const scoreColor = score >= 85 ? "text-emerald-400" : score >= 70 ? "text-cyan-400" : score >= 55 ? "text-yellow-400" : "text-red-400";
+                const scoreRingColor = score >= 85 ? "hsl(160 84% 39%)" : score >= 70 ? "hsl(198 93% 60%)" : score >= 55 ? "hsl(48 96% 53%)" : "hsl(0 72% 51%)";
+                const scoreBarColor = score >= 85 ? "from-emerald-500 to-teal-400" : score >= 70 ? "from-cyan-500 to-blue-400" : score >= 55 ? "from-yellow-500 to-amber-400" : "from-red-500 to-rose-400";
+                const circumference = 2 * Math.PI * 40;
+
                 return (
                   <div className="space-y-6">
+
                     {/* Score + Summary row */}
                     <div className="grid md:grid-cols-3 gap-4">
-                      {/* Score card */}
-                      <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5 flex flex-col items-center justify-center text-center">
-                        <p className="text-xs text-muted-foreground mb-2 uppercase tracking-widest">Resume Score</p>
-                        <p className={`text-5xl font-black font-[Space_Grotesk] ${scoreColor}`}>{score}</p>
-                        <p className="text-xs text-muted-foreground mt-1">out of 100</p>
-                        <div className="w-full mt-4 h-2 rounded-full bg-white/5 overflow-hidden">
+
+                      {/* Score card — circular gauge */}
+                      <div className="rounded-2xl bg-gradient-to-br from-white/[0.04] to-white/[0.01] border border-white/8 p-6 flex flex-col items-center justify-center text-center gap-3">
+                        <p className="text-xs text-muted-foreground uppercase tracking-widest font-medium">Resume Score</p>
+                        <div className="relative w-28 h-28">
+                          <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                            <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="9" />
+                            <motion.circle
+                              cx="50" cy="50" r="40" fill="none"
+                              stroke={scoreRingColor}
+                              strokeWidth="9"
+                              strokeLinecap="round"
+                              strokeDasharray={circumference}
+                              initial={{ strokeDashoffset: circumference }}
+                              animate={{ strokeDashoffset: circumference - (score / 100) * circumference }}
+                              transition={{ duration: 1.0, ease: "easeOut" }}
+                            />
+                          </svg>
+                          <div className="absolute inset-0 flex flex-col items-center justify-center">
+                            <span className={`text-3xl font-black font-[Space_Grotesk] ${scoreColor}`}>{score}</span>
+                            <span className="text-xs text-muted-foreground">/ 100</span>
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-white">{scoreLabel}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">AI-powered score</p>
+                        </div>
+                        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
                           <motion.div
                             initial={{ width: 0 }}
                             animate={{ width: `${score}%` }}
-                            transition={{ duration: 0.8, ease: "easeOut" }}
+                            transition={{ duration: 0.9, ease: "easeOut" }}
                             className={`h-full rounded-full bg-gradient-to-r ${scoreBarColor}`}
                           />
                         </div>
                       </div>
-                      {/* Summary */}
-                      <div className="md:col-span-2 rounded-xl bg-white/[0.03] border border-white/5 p-5">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Sparkles className="w-4 h-4 text-primary" />
-                          <p className="text-sm font-semibold text-white">AI Summary</p>
+
+                      {/* AI Summary */}
+                      <div className="md:col-span-2 rounded-2xl bg-gradient-to-br from-primary/[0.08] via-violet-500/[0.04] to-transparent border border-primary/15 p-6 flex flex-col gap-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/20 flex items-center justify-center">
+                            <Sparkles className="w-3.5 h-3.5 text-primary" />
+                          </div>
+                          <p className="text-sm font-bold text-white">AI Summary</p>
+                          <span className="ml-auto text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">Gemini 2.5 Flash</span>
                         </div>
-                        <p className="text-sm text-muted-foreground leading-relaxed">{a.summary}</p>
+                        {summary ? (
+                          <p className="text-sm text-muted-foreground leading-relaxed flex-1">{summary}</p>
+                        ) : (
+                          <p className="text-sm text-muted-foreground/50 italic">No summary generated.</p>
+                        )}
                       </div>
                     </div>
 
                     {/* Skills */}
-                    {a.skills.length > 0 && (
-                      <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
-                        <div className="flex items-center gap-2 mb-4">
-                          <Code2 className="w-4 h-4 text-violet-400" />
-                          <p className="text-sm font-semibold text-white">Skills</p>
-                          <span className="ml-auto text-xs text-muted-foreground">{a.skills.length} detected</span>
+                    <div className="rounded-2xl bg-white/[0.025] border border-white/5 p-5">
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className="w-7 h-7 rounded-lg bg-violet-500/15 border border-violet-500/20 flex items-center justify-center">
+                          <Code2 className="w-3.5 h-3.5 text-violet-400" />
                         </div>
+                        <p className="text-sm font-bold text-white">Skills</p>
+                        {skills.length > 0 && (
+                          <span className="ml-auto text-xs px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20">{skills.length} detected</span>
+                        )}
+                      </div>
+                      {skills.length > 0 ? (
                         <div className="flex flex-wrap gap-2">
-                          {a.skills.map((skill, i) => (
-                            <span
+                          {skills.map((skill, i) => (
+                            <motion.span
                               key={i}
-                              className="px-3 py-1 rounded-full text-xs font-medium bg-violet-500/10 text-violet-300 border border-violet-500/20"
+                              initial={{ opacity: 0, scale: 0.85 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: i * 0.02 }}
+                              className="px-3 py-1 rounded-full text-xs font-medium bg-violet-500/10 text-violet-300 border border-violet-500/20 hover:bg-violet-500/20 transition-colors"
                             >
-                              {skill}
-                            </span>
+                              {String(skill)}
+                            </motion.span>
                           ))}
                         </div>
-                      </div>
-                    )}
-
-                    <div className="grid md:grid-cols-2 gap-4">
-                      {/* Education */}
-                      {a.education.length > 0 && (
-                        <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
-                          <div className="flex items-center gap-2 mb-4">
-                            <BookOpen className="w-4 h-4 text-cyan-400" />
-                            <p className="text-sm font-semibold text-white">Education</p>
-                          </div>
-                          <div className="space-y-3">
-                            {a.education.map((edu, i) => (
-                              <div key={i} className="flex flex-col gap-0.5">
-                                <p className="text-sm font-medium text-white">{edu.degree}</p>
-                                <p className="text-xs text-muted-foreground">{edu.institution}{edu.year ? ` · ${edu.year}` : ""}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Certifications */}
-                      {a.certifications.length > 0 && (
-                        <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
-                          <div className="flex items-center gap-2 mb-4">
-                            <Award className="w-4 h-4 text-amber-400" />
-                            <p className="text-sm font-semibold text-white">Certifications</p>
-                          </div>
-                          <div className="space-y-2">
-                            {a.certifications.map((cert, i) => (
-                              <div key={i} className="flex items-center gap-2">
-                                <div className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-                                <p className="text-sm text-muted-foreground">{cert}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground/50 italic">No skills detected.</p>
                       )}
                     </div>
 
-                    {/* Projects */}
-                    {a.projects.length > 0 && (
-                      <div className="rounded-xl bg-white/[0.03] border border-white/5 p-5">
+                    <div className="grid md:grid-cols-2 gap-4">
+
+                      {/* Education */}
+                      <div className="rounded-2xl bg-white/[0.025] border border-white/5 p-5">
                         <div className="flex items-center gap-2 mb-4">
-                          <Target className="w-4 h-4 text-emerald-400" />
-                          <p className="text-sm font-semibold text-white">Projects</p>
-                          <span className="ml-auto text-xs text-muted-foreground">{a.projects.length} found</span>
+                          <div className="w-7 h-7 rounded-lg bg-cyan-500/15 border border-cyan-500/20 flex items-center justify-center">
+                            <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+                          </div>
+                          <p className="text-sm font-bold text-white">Education</p>
                         </div>
-                        <div className="grid sm:grid-cols-2 gap-3">
-                          {a.projects.map((proj, i) => (
-                            <div key={i} className="p-4 rounded-lg bg-white/[0.02] border border-white/5">
-                              <p className="text-sm font-medium text-white mb-1">{proj.name}</p>
-                              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{proj.description}</p>
-                            </div>
-                          ))}
-                        </div>
+                        {education.length > 0 ? (
+                          <div className="space-y-3">
+                            {education.map((edu, i) => {
+                              const e = typeof edu === "object" && edu !== null ? edu as AnalysisEducation : { degree: String(edu), institution: "", year: "" };
+                              return (
+                                <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                                  <div className="w-2 h-2 rounded-full bg-cyan-400 mt-1.5 flex-shrink-0" />
+                                  <div>
+                                    <p className="text-sm font-semibold text-white leading-snug">{e.degree || "—"}</p>
+                                    {(e.institution || e.year) && (
+                                      <p className="text-xs text-muted-foreground mt-0.5">
+                                        {[e.institution, e.year].filter(Boolean).join(" · ")}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground/50 italic">No education detected.</p>
+                        )}
                       </div>
-                    )}
+
+                      {/* Certifications */}
+                      <div className="rounded-2xl bg-white/[0.025] border border-white/5 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/20 flex items-center justify-center">
+                            <Award className="w-3.5 h-3.5 text-amber-400" />
+                          </div>
+                          <p className="text-sm font-bold text-white">Certifications</p>
+                        </div>
+                        {certifications.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {certifications.map((cert, i) => (
+                              <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                                <Star className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                                <span className="text-xs font-medium text-amber-300">{String(cert)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground/50 italic">No certifications detected.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Projects */}
+                    <div className="rounded-2xl bg-white/[0.025] border border-white/5 p-5">
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center">
+                          <Target className="w-3.5 h-3.5 text-emerald-400" />
+                        </div>
+                        <p className="text-sm font-bold text-white">Projects</p>
+                        {projects.length > 0 && (
+                          <span className="ml-auto text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{projects.length} found</span>
+                        )}
+                      </div>
+                      {projects.length > 0 ? (
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          {projects.map((proj, i) => {
+                            const p = typeof proj === "object" && proj !== null ? proj as AnalysisProject : { name: String(proj), description: "" };
+                            return (
+                              <motion.div
+                                key={i}
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: i * 0.05 }}
+                                className="p-4 rounded-xl bg-emerald-500/[0.04] border border-emerald-500/10 hover:border-emerald-500/20 transition-colors"
+                              >
+                                <div className="flex items-center gap-2 mb-1.5">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+                                  <p className="text-sm font-semibold text-white truncate">{p.name || "Untitled"}</p>
+                                </div>
+                                {p.description && (
+                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{p.description}</p>
+                                )}
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground/50 italic">No projects detected.</p>
+                      )}
+                    </div>
+
                   </div>
                 );
               })()}
