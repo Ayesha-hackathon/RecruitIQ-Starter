@@ -14,18 +14,20 @@ name = "web"
 paths = [ "/" ]
 localPort = 22600
 
+[services.env]
+PORT = "22600"
+BASE_PATH = "/"
+
 [services.development]
 run = "pnpm --filter @workspace/recruit-iq run dev"
 
 [services.production]
-build = [ "pnpm", "--filter", "@workspace/recruit-iq", "run", "build" ]
 publicDir = "artifacts/recruit-iq/dist/public"
 serve = "static"
+
+[services.production.build]
+args = ["sh", "-c", "PORT=8080 BASE_PATH=/ pnpm --filter @workspace/recruit-iq run build"]
 
 [[services.production.rewrites]]
 from = "/*"
 to = "/index.html"
-
-[services.env]
-PORT = "22600"
-BASE_PATH = "/"
