@@ -106,17 +106,37 @@ ${trimmed.slice(0, 14000)}
     const result = await model.generateContent(prompt);
     const raw = result.response.text().trim();
 
+    // Gemini 2.5 Flash is a thinking model — strip any <think>…</think> blocks
+    // that appear before the actual JSON output.
+    const withoutThinking = raw
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .trim();
+
     // Strip markdown code fences if Gemini wraps output anyway
-    const cleaned = raw
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
+    const stripped = withoutThinking
+      .replace(/^```json\s*/im, "")
+      .replace(/^```\s*/im, "")
+      .replace(/\s*```\s*$/im, "")
       .trim();
 
     let analysis: unknown;
+    // Primary attempt: parse the cleaned string directly
     try {
-      analysis = JSON.parse(cleaned);
+      analysis = JSON.parse(stripped);
     } catch {
+      // Fallback: extract the JSON object by locating the outermost { … }
+      const start = stripped.indexOf("{");
+      const end = stripped.lastIndexOf("}");
+      if (start !== -1 && end > start) {
+        try {
+          analysis = JSON.parse(stripped.slice(start, end + 1));
+        } catch {
+          // fall through to error below
+        }
+      }
+    }
+
+    if (analysis === undefined || analysis === null) {
       req.log.error({ raw }, "Gemini returned non-JSON response");
       res.status(500).json({
         error: "AI returned an unexpected format. Please try again.",

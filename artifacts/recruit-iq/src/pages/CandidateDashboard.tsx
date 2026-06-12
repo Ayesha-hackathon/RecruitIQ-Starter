@@ -191,6 +191,12 @@ export default function CandidateDashboard() {
   // Real AI score wired to the top stat card
   const realScore = candidate?.analysis?.resumeScore ?? null;
 
+  // Determine if the fetched analysis has valid content worth rendering
+  const hasValidAnalysis =
+    candidate?.analysis != null &&
+    (typeof (candidate.analysis as ResumeAnalysis).resumeScore === "number" ||
+      Array.isArray((candidate.analysis as ResumeAnalysis).skills));
+
   const handleSignOut = async () => {
     await signOut();
     setLocation("/login");
@@ -365,47 +371,113 @@ export default function CandidateDashboard() {
               className="rounded-2xl bg-card/50 border border-white/5 p-6"
             >
               <h2 className="text-lg font-bold text-white font-[Space_Grotesk] mb-6">Resume Strength</h2>
-              <div className="flex flex-col items-center mb-6">
-                <div className="relative w-32 h-32">
-                  <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
-                    <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="10" />
-                    <circle cx="50" cy="50" r="40" fill="none" stroke="hsl(var(--primary))" strokeWidth="10"
-                      strokeDasharray={`${87 * 2.51} ${100 * 2.51}`} strokeLinecap="round" />
-                  </svg>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-3xl font-bold text-white font-[Space_Grotesk]">87</span>
-                    <span className="text-xs text-muted-foreground">/ 100</span>
+
+              {loadingCandidate ? (
+                <div className="flex flex-col items-center gap-4 py-4">
+                  <div className="w-32 h-32 rounded-full bg-white/5 animate-pulse" />
+                  <div className="h-3 w-24 rounded bg-white/5 animate-pulse" />
+                  <div className="w-full space-y-3 mt-2">
+                    {[80, 65, 75, 55].map((w, i) => (
+                      <div key={i} className="h-2 rounded-full bg-white/5 animate-pulse" style={{ width: `${w}%` }} />
+                    ))}
                   </div>
                 </div>
-                <div className="mt-3 text-sm font-semibold text-white">Strong Resume</div>
-                <div className="text-xs text-muted-foreground">Top 15% of applicants</div>
-              </div>
-              <div className="space-y-3">
-                {[
-                  { label: "Experience", score: 90 },
-                  { label: "Skills", score: 85 },
-                  { label: "Education", score: 88 },
-                  { label: "Keywords", score: 78 },
-                ].map((item, i) => (
-                  <div key={i}>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-muted-foreground">{item.label}</span>
-                      <span className="text-white font-medium">{item.score}%</span>
+              ) : (() => {
+                const score = hasValidAnalysis ? (candidate!.analysis!.resumeScore ?? 0) : null;
+                const scoreLabel = score === null ? null : score >= 85 ? "Excellent" : score >= 70 ? "Strong" : score >= 55 ? "Good" : "Needs Work";
+                const ringColor = score === null ? "hsl(var(--primary))" : score >= 85 ? "hsl(160 84% 39%)" : score >= 70 ? "hsl(198 93% 60%)" : score >= 55 ? "hsl(48 96% 53%)" : "hsl(0 72% 51%)";
+                const barGradient = score === null ? "from-primary to-cyan-400" : score >= 85 ? "from-emerald-500 to-teal-400" : score >= 70 ? "from-cyan-500 to-blue-400" : score >= 55 ? "from-yellow-500 to-amber-400" : "from-red-500 to-rose-400";
+                const circumference = 2 * Math.PI * 40;
+                const skills = hasValidAnalysis ? (candidate!.analysis!.skills ?? []) : [];
+                const education = hasValidAnalysis ? (candidate!.analysis!.education ?? []) : [];
+                const certs = hasValidAnalysis ? (candidate!.analysis!.certifications ?? []) : [];
+                const projects = hasValidAnalysis ? (candidate!.analysis!.projects ?? []) : [];
+
+                const dims = score !== null
+                  ? [
+                      { label: "Skills detected", value: skills.length, max: Math.max(skills.length, 10) },
+                      { label: "Education entries", value: education.length, max: Math.max(education.length, 3) },
+                      { label: "Certifications", value: certs.length, max: Math.max(certs.length, 3) },
+                      { label: "Projects", value: projects.length, max: Math.max(projects.length, 5) },
+                    ]
+                  : [
+                      { label: "Experience", value: 90, max: 100 },
+                      { label: "Skills", value: 85, max: 100 },
+                      { label: "Education", value: 88, max: 100 },
+                      { label: "Keywords", value: 78, max: 100 },
+                    ];
+
+                return (
+                  <>
+                    <div className="flex flex-col items-center mb-6">
+                      <div className="relative w-32 h-32">
+                        <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                          <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="10" />
+                          {score !== null ? (
+                            <motion.circle
+                              cx="50" cy="50" r="40" fill="none"
+                              stroke={ringColor}
+                              strokeWidth="10"
+                              strokeLinecap="round"
+                              strokeDasharray={circumference}
+                              initial={{ strokeDashoffset: circumference }}
+                              animate={{ strokeDashoffset: circumference - (score / 100) * circumference }}
+                              transition={{ duration: 1.0, ease: "easeOut" }}
+                            />
+                          ) : (
+                            <circle cx="50" cy="50" r="40" fill="none" stroke={ringColor} strokeWidth="10"
+                              strokeDasharray={`${87 * 2.51} ${100 * 2.51}`} strokeLinecap="round" opacity="0.3" />
+                          )}
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center">
+                          <span className="text-3xl font-bold text-white font-[Space_Grotesk]">
+                            {score !== null ? score : "—"}
+                          </span>
+                          <span className="text-xs text-muted-foreground">/ 100</span>
+                        </div>
+                      </div>
+                      <div className="mt-3 text-sm font-semibold text-white">
+                        {scoreLabel ?? "Awaiting Analysis"}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {score !== null ? "AI-powered score" : "Run AI analysis to score your resume"}
+                      </div>
                     </div>
-                    <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-primary to-cyan-400 rounded-full"
-                        style={{ width: `${item.score}%` }}
-                      />
+
+                    <div className="space-y-3">
+                      {dims.map((item, i) => {
+                        const pct = score !== null
+                          ? item.max > 0 ? Math.round((item.value / item.max) * 100) : 0
+                          : item.value as number;
+                        return (
+                          <div key={i}>
+                            <div className="flex justify-between text-xs mb-1">
+                              <span className="text-muted-foreground">{item.label}</span>
+                              <span className="text-white font-medium">
+                                {score !== null ? item.value : `${item.value}%`}
+                              </span>
+                            </div>
+                            <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                              <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${pct}%` }}
+                                transition={{ duration: 0.7, ease: "easeOut", delay: i * 0.08 }}
+                                className={`h-full bg-gradient-to-r ${barGradient} rounded-full`}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
-                ))}
-              </div>
-              <Link href="/resume-upload">
-                <Button className="w-full mt-6 h-10 bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 text-sm">
-                  Update Resume
-                </Button>
-              </Link>
+
+                    <Link href="/resume-upload">
+                      <Button className="w-full mt-6 h-10 bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 text-sm">
+                        Update Resume
+                      </Button>
+                    </Link>
+                  </>
+                );
+              })()}
             </motion.div>
           </div>
 
@@ -419,7 +491,7 @@ export default function CandidateDashboard() {
             <h2 className="text-lg font-bold text-white font-[Space_Grotesk] mb-5">Interview Preparation Checklist</h2>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: "Resume reviewed by AI", done: !!candidate?.analysis },
+                { label: "Resume reviewed by AI", done: hasValidAnalysis },
                 { label: "Skills assessment sent", done: true },
                 { label: "Technical interview scheduled", done: false },
                 { label: "Hiring decision pending", done: false },
@@ -458,7 +530,7 @@ export default function CandidateDashboard() {
                 >
                   {analyzing ? (
                     <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing…</>
-                  ) : candidate?.analysis ? (
+                  ) : hasValidAnalysis ? (
                     <><RefreshCw className="w-4 h-4" /> Re-analyze</>
                   ) : (
                     <><Brain className="w-4 h-4" /> Analyze Resume</>
@@ -513,7 +585,7 @@ export default function CandidateDashboard() {
               )}
 
               {/* Has resume but not yet analyzed */}
-              {candidate?.resume_url && !candidate.analysis && !analyzing && (
+              {candidate?.resume_url && !hasValidAnalysis && !analyzing && (
                 <div className="text-center py-10">
                   <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
                     <Brain className="w-6 h-6 text-primary" />
@@ -524,8 +596,8 @@ export default function CandidateDashboard() {
               )}
 
               {/* Analysis results */}
-              {candidate?.analysis && !analyzing && (() => {
-                const a = candidate.analysis;
+              {hasValidAnalysis && !analyzing && (() => {
+                const a = candidate!.analysis!;
 
                 // Defensive extraction — guards against string/undefined fields
                 // if Supabase returns a partially-formed or un-parsed object.
