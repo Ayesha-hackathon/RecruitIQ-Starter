@@ -113,6 +113,44 @@ const applications = [
   { role: "Lead Engineer", company: "Quantum Dynamics", status: "Applied", statusColor: "text-muted-foreground bg-white/5 border-white/10", date: "May 28" },
 ];
 
+// ─── Normalise analysis shape ────────────────────────────────────────────────
+// Guarantees every field is the correct type regardless of what Supabase/Gemini
+// actually returns.  Called both on fresh API responses AND on Supabase fetches.
+function normalizeAnalysis(raw: unknown): ResumeAnalysis {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const ensureStringArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => String(x)) : [];
+  return {
+    resumeScore:    typeof obj.resumeScore === "number" ? Math.round(obj.resumeScore) : 0,
+    summary:        typeof obj.summary === "string" ? obj.summary.trim() : "",
+    skills:         ensureStringArray(obj.skills),
+    certifications: ensureStringArray(obj.certifications),
+    education: Array.isArray(obj.education)
+      ? obj.education.map((e) => {
+          const ed = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
+          return { degree: String(ed.degree ?? ""), institution: String(ed.institution ?? ""), year: String(ed.year ?? "") };
+        })
+      : [],
+    projects: Array.isArray(obj.projects)
+      ? obj.projects.map((p) => {
+          const pr = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
+          return { name: String(pr.name ?? ""), description: String(pr.description ?? "") };
+        })
+      : [],
+  };
+}
+
+// ─── Debug info type ─────────────────────────────────────────────────────────
+interface DebugInfo {
+  source: "api" | "supabase";
+  supabaseRaw: unknown;
+  apiRawText: string | null;
+  apiCleanedText: string | null;
+  apiExtractionMethod: string | null;
+  apiParsedKeys: string[] | null;
+  finalAnalysis: unknown;
+}
+
 export default function CandidateDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [location, setLocation] = useLocation();
@@ -122,38 +160,61 @@ export default function CandidateDashboard() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [loadingCandidate, setLoadingCandidate] = useState(true);
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
+  const [debugOpen, setDebugOpen] = useState(false);
 
   useEffect(() => {
     if (!user) return;
     setLoadingCandidate(true);
+    console.group("[RecruitIQ] Supabase fetch — candidates");
+    console.log("user_id:", user.id);
     supabase
       .from("candidates")
       .select("resume_url, resume_filename, analysis")
       .eq("user_id", user.id)
       .single()
-      .then(({ data }) => {
+      .then(({ data, error }) => {
+        console.log("Supabase response →", { data, error });
         if (data) {
-          const raw = data as { resume_url: string | null; resume_filename: string | null; analysis: unknown };
-          // Supabase may return 'analysis' as a JSON string if the column type is 'json' (not 'jsonb').
-          // Always safely parse it to guarantee we have a plain object.
-          let analysis: ResumeAnalysis | null = null;
-          if (typeof raw.analysis === "string" && raw.analysis.trim().length > 0) {
-            try {
-              const parsed = JSON.parse(raw.analysis) as unknown;
-              // Gemini sometimes nests the result inside another 'analysis' key
-              const inner = (parsed as Record<string, unknown>)?.analysis ?? parsed;
-              analysis = inner as ResumeAnalysis;
-            } catch {
-              analysis = null;
-            }
-          } else if (raw.analysis && typeof raw.analysis === "object") {
-            const obj = raw.analysis as Record<string, unknown>;
-            // Gemini sometimes nests the result inside another 'analysis' key
-            analysis = (obj.analysis ?? obj) as ResumeAnalysis;
+          const row = data as { resume_url: string | null; resume_filename: string | null; analysis: unknown };
+          console.log("raw.analysis type:", typeof row.analysis);
+          console.log("raw.analysis value:", row.analysis);
+
+          // If Supabase returns the JSON column as a string (json type vs jsonb), parse it first
+          let rawObj: unknown = row.analysis;
+          if (typeof rawObj === "string" && rawObj.trim().length > 0) {
+            try { rawObj = JSON.parse(rawObj); } catch { rawObj = null; }
           }
-          setCandidate({ resume_url: raw.resume_url, resume_filename: raw.resume_filename, analysis });
+          console.log("After string-parse:", rawObj);
+
+          // Handle double-nesting: { analysis: { skills, ... } } → unwrap
+          if (rawObj && typeof rawObj === "object") {
+            const maybe = (rawObj as Record<string, unknown>).analysis;
+            if (maybe && typeof maybe === "object") {
+              console.log("Detected nested analysis key — unwrapping");
+              rawObj = maybe;
+            }
+          }
+          console.log("Pre-normalise:", rawObj);
+
+          const analysis = rawObj ? normalizeAnalysis(rawObj) : null;
+          console.log("Normalised analysis:", analysis);
+
+          setDebugInfo({
+            source: "supabase",
+            supabaseRaw: row.analysis,
+            apiRawText: null,
+            apiCleanedText: null,
+            apiExtractionMethod: null,
+            apiParsedKeys: null,
+            finalAnalysis: analysis,
+          });
+          setCandidate({ resume_url: row.resume_url, resume_filename: row.resume_filename, analysis });
+        } else {
+          console.warn("No candidate row found:", error?.message);
         }
         setLoadingCandidate(false);
+        console.groupEnd();
       });
   }, [user]);
 
@@ -162,20 +223,64 @@ export default function CandidateDashboard() {
     setAnalyzing(true);
     setAnalysisError("");
     try {
+      console.group("[RecruitIQ] analyzeResume API call");
+      console.log("resumeUrl:", candidate.resume_url);
+
       const resp = await fetch("/api/analyze-resume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resumeUrl: candidate.resume_url }),
       });
-      const data = await resp.json() as { analysis?: ResumeAnalysis; error?: string };
+
+      const data = await resp.json() as {
+        analysis?: ResumeAnalysis;
+        error?: string;
+        _debug?: {
+          rawText: string;
+          rawLength: number;
+          extractionMethod: string;
+          cleanedText: string;
+          parsedKeys: string[];
+        };
+      };
+
+      console.log("HTTP status:", resp.status);
+      console.log("Full API response:", data);
+      console.log("_debug.rawText (first 800):", data._debug?.rawText?.slice(0, 800));
+      console.log("_debug.extractionMethod:", data._debug?.extractionMethod);
+      console.log("_debug.parsedKeys:", data._debug?.parsedKeys);
+      console.log("analysis object:", data.analysis);
+
       if (!resp.ok) throw new Error(data.error ?? "Analysis failed");
-      const analysis = data.analysis!;
-      await supabase
+
+      const analysis = normalizeAnalysis(data.analysis);
+      console.log("Normalised analysis:", analysis);
+      console.groupEnd();
+
+      // Persist to Supabase
+      const { error: upsertError } = await supabase
         .from("candidates")
         .update({ analysis })
         .eq("user_id", user!.id);
+      if (upsertError) {
+        console.error("[RecruitIQ] Supabase update error:", upsertError);
+      } else {
+        console.log("[RecruitIQ] Supabase update success");
+      }
+
+      setDebugInfo({
+        source: "api",
+        supabaseRaw: null,
+        apiRawText: data._debug?.rawText ?? null,
+        apiCleanedText: data._debug?.cleanedText ?? null,
+        apiExtractionMethod: data._debug?.extractionMethod ?? null,
+        apiParsedKeys: data._debug?.parsedKeys ?? null,
+        finalAnalysis: analysis,
+      });
       setCandidate((prev) => prev ? { ...prev, analysis } : prev);
     } catch (err: unknown) {
+      console.error("[RecruitIQ] analyzeResume error:", err);
+      console.groupEnd();
       setAnalysisError(err instanceof Error ? err.message : "Analysis failed. Please try again.");
     } finally {
       setAnalyzing(false);
@@ -597,16 +702,14 @@ export default function CandidateDashboard() {
 
               {/* Analysis results */}
               {hasValidAnalysis && !analyzing && (() => {
-                const a = candidate!.analysis!;
+                const a = normalizeAnalysis(candidate!.analysis!);
 
-                // Defensive extraction — guards against string/undefined fields
-                // if Supabase returns a partially-formed or un-parsed object.
-                const score = typeof a.resumeScore === "number" ? a.resumeScore : 0;
-                const summary = typeof a.summary === "string" ? a.summary.trim() : "";
-                const skills = Array.isArray(a.skills) ? a.skills.filter(Boolean) : [];
-                const education = Array.isArray(a.education) ? a.education.filter(Boolean) : [];
-                const projects = Array.isArray(a.projects) ? a.projects.filter(Boolean) : [];
-                const certifications = Array.isArray(a.certifications) ? a.certifications.filter(Boolean) : [];
+                const score          = a.resumeScore;
+                const summary        = a.summary;
+                const skills         = a.skills;
+                const education      = a.education;
+                const projects       = a.projects;
+                const certifications = a.certifications;
 
                 const scoreLabel = score >= 85 ? "Excellent" : score >= 70 ? "Strong" : score >= 55 ? "Good" : "Needs Work";
                 const scoreColor = score >= 85 ? "text-emerald-400" : score >= 70 ? "text-cyan-400" : score >= 55 ? "text-yellow-400" : "text-red-400";
@@ -802,6 +905,78 @@ export default function CandidateDashboard() {
                   </div>
                 );
               })()}
+
+              {/* ── DEBUG PANEL (temporary) ───────────────────────────────── */}
+              {debugInfo && (
+                <div className="mt-6 rounded-xl border border-yellow-500/30 bg-yellow-500/5 overflow-hidden">
+                  <button
+                    onClick={() => setDebugOpen((v) => !v)}
+                    className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-yellow-500/10 transition-colors"
+                  >
+                    <span className="text-xs font-mono font-bold text-yellow-400">🐛 DEBUG PANEL</span>
+                    <span className="text-xs text-yellow-400/60 ml-1">
+                      source: {debugInfo.source} · method: {debugInfo.apiExtractionMethod ?? "n/a"}
+                    </span>
+                    <span className="ml-auto text-xs text-yellow-400/50">{debugOpen ? "▲ hide" : "▼ show"}</span>
+                  </button>
+
+                  {debugOpen && (
+                    <div className="border-t border-yellow-500/20 p-4 space-y-4 font-mono text-xs">
+
+                      {/* Supabase raw */}
+                      <div>
+                        <p className="text-yellow-400 font-bold mb-1">SUPABASE RAW (analysis column)</p>
+                        <pre className="bg-black/60 rounded-lg p-3 overflow-auto max-h-40 text-green-300 text-[11px] whitespace-pre-wrap break-all">
+                          {JSON.stringify(debugInfo.supabaseRaw ?? "(only available on Supabase fetch)", null, 2)}
+                        </pre>
+                      </div>
+
+                      {/* API raw Gemini text */}
+                      {debugInfo.apiRawText && (
+                        <div>
+                          <p className="text-yellow-400 font-bold mb-1">
+                            RAW GEMINI TEXT ({debugInfo.apiRawText.length} chars)
+                          </p>
+                          <pre className="bg-black/60 rounded-lg p-3 overflow-auto max-h-48 text-cyan-300 text-[11px] whitespace-pre-wrap break-all">
+                            {debugInfo.apiRawText}
+                          </pre>
+                        </div>
+                      )}
+
+                      {/* Cleaned text */}
+                      {debugInfo.apiCleanedText && (
+                        <div>
+                          <p className="text-yellow-400 font-bold mb-1">
+                            CLEANED / EXTRACTED JSON (method: {debugInfo.apiExtractionMethod})
+                          </p>
+                          <pre className="bg-black/60 rounded-lg p-3 overflow-auto max-h-40 text-lime-300 text-[11px] whitespace-pre-wrap break-all">
+                            {debugInfo.apiCleanedText}
+                          </pre>
+                        </div>
+                      )}
+
+                      {/* Parsed keys */}
+                      {debugInfo.apiParsedKeys && (
+                        <div>
+                          <p className="text-yellow-400 font-bold mb-1">PARSED KEYS</p>
+                          <p className="text-white/70">{debugInfo.apiParsedKeys.join(", ")}</p>
+                        </div>
+                      )}
+
+                      {/* Final analysis object */}
+                      <div>
+                        <p className="text-yellow-400 font-bold mb-1">FINAL PARSED OBJECT (post-normalise)</p>
+                        <pre className="bg-black/60 rounded-lg p-3 overflow-auto max-h-64 text-orange-300 text-[11px] whitespace-pre-wrap break-all">
+                          {JSON.stringify(debugInfo.finalAnalysis, null, 2)}
+                        </pre>
+                      </div>
+
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* ── end debug panel ─────────────────────────────────────────── */}
+
             </div>
           </motion.div>
         </main>

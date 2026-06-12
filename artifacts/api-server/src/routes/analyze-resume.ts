@@ -2,8 +2,6 @@ import { Router } from "express";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createRequire } from "node:module";
 
-// Use createRequire to load the lib subpath, bypassing pdf-parse/index.js
-// which unconditionally reads a test PDF at module load time and crashes the server.
 const _require = createRequire(import.meta.url);
 type PdfParseResult = { text: string; numpages: number; info: unknown; metadata: unknown };
 const pdfParse = _require("pdf-parse/lib/pdf-parse.js") as (
@@ -13,6 +11,84 @@ const pdfParse = _require("pdf-parse/lib/pdf-parse.js") as (
 
 const router = Router();
 
+// ─── Safe JSON extractor ────────────────────────────────────────────────────
+// Handles all three Gemini output patterns:
+//   Case 1 – pure JSON            { "skills": [] }
+//   Case 2 – markdown-fenced      ```json\n{ ... }\n```
+//   Case 3 – text before/after    "Here is the analysis:\n{ ... }\nDone."
+function extractJson(raw: string): { json: unknown; method: string; cleaned: string } | null {
+  // Step 1: strip Gemini 2.5 Flash <think>…</think> reasoning blocks
+  let text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  // Step 2: strip ALL markdown code-fence variants (multiline-safe)
+  text = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, "$1").trim();
+
+  // Step 3: try direct parse on the cleaned text
+  try {
+    const json = JSON.parse(text);
+    return { json, method: "direct", cleaned: text };
+  } catch { /* continue */ }
+
+  // Step 4: brace-extraction fallback — find outermost { … }
+  const start = text.indexOf("{");
+  const end   = text.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const slice = text.slice(start, end + 1);
+    try {
+      const json = JSON.parse(slice);
+      return { json, method: "brace-extract", cleaned: slice };
+    } catch { /* continue */ }
+  }
+
+  return null;
+}
+
+// ─── Shape normaliser ────────────────────────────────────────────────────────
+// Guarantees the caller always receives a fully-typed object even if Gemini
+// omits a field or returns it with the wrong type.
+interface ResumeAnalysis {
+  skills: string[];
+  education: Array<{ degree: string; institution: string; year: string }>;
+  projects: Array<{ name: string; description: string }>;
+  certifications: string[];
+  resumeScore: number;
+  summary: string;
+}
+
+function normalizeAnalysis(raw: unknown): ResumeAnalysis {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+
+  const ensureStringArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => String(x)) : [];
+
+  return {
+    resumeScore: typeof obj.resumeScore === "number" ? Math.round(obj.resumeScore) : 0,
+    summary:     typeof obj.summary === "string" ? obj.summary.trim() : "",
+    skills:      ensureStringArray(obj.skills),
+    certifications: ensureStringArray(obj.certifications),
+    education: Array.isArray(obj.education)
+      ? obj.education.map((e) => {
+          const ed = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
+          return {
+            degree:      String(ed.degree      ?? ""),
+            institution: String(ed.institution ?? ""),
+            year:        String(ed.year        ?? ""),
+          };
+        })
+      : [],
+    projects: Array.isArray(obj.projects)
+      ? obj.projects.map((p) => {
+          const pr = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
+          return {
+            name:        String(pr.name        ?? ""),
+            description: String(pr.description ?? ""),
+          };
+        })
+      : [],
+  };
+}
+
+// ─── Route ──────────────────────────────────────────────────────────────────
 router.post("/analyze-resume", async (req, res) => {
   const { resumeUrl } = req.body as { resumeUrl?: string };
 
@@ -29,8 +105,8 @@ router.post("/analyze-resume", async (req, res) => {
   }
 
   try {
-    // 1. Download the PDF from Supabase Storage
-    req.log.info({ resumeUrl }, "Downloading resume PDF");
+    // 1. Download PDF
+    req.log.info({ resumeUrl }, "[analyze] Downloading resume PDF");
     const pdfResponse = await fetch(resumeUrl);
     if (!pdfResponse.ok) {
       res.status(400).json({
@@ -41,36 +117,35 @@ router.post("/analyze-resume", async (req, res) => {
 
     const contentType = pdfResponse.headers.get("content-type") ?? "";
     if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
-      req.log.warn({ contentType }, "Unexpected content type for PDF");
+      req.log.warn({ contentType }, "[analyze] Unexpected content-type for PDF");
     }
 
     const arrayBuffer = await pdfResponse.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // 2. Extract text from PDF
-    req.log.info("Extracting text from PDF");
+    // 2. Extract text
+    req.log.info("[analyze] Extracting text from PDF");
     let resumeText = "";
     try {
       const parsed = await pdfParse(buffer);
       resumeText = parsed.text ?? "";
     } catch (parseErr) {
-      req.log.error({ parseErr }, "pdf-parse failed");
-      res.status(422).json({
-        error: "Could not parse the PDF. It may be corrupted or password-protected.",
-      });
+      req.log.error({ parseErr }, "[analyze] pdf-parse failed");
+      res.status(422).json({ error: "Could not parse the PDF. It may be corrupted or password-protected." });
       return;
     }
 
     const trimmed = resumeText.trim();
+    req.log.info({ charCount: trimmed.length }, "[analyze] PDF text extracted");
+
     if (trimmed.length < 40) {
       res.status(422).json({
-        error:
-          "The PDF appears to be empty or image-based (scanned). Please upload a text-based PDF.",
+        error: "The PDF appears to be empty or image-based (scanned). Please upload a text-based PDF.",
       });
       return;
     }
 
-    // 3. Build Gemini prompt
+    // 3. Build prompt
     const prompt = `You are an expert resume analyzer. Analyze the resume text below and respond with ONLY a valid JSON object — no markdown, no code fences, no extra text.
 
 Required JSON structure:
@@ -84,14 +159,14 @@ Required JSON structure:
 }
 
 Rules:
-- resumeScore: integer 0-100 (score based on completeness, clarity, ATS-friendliness, and formatting)
-- skills: flat array of strings (technical tools, languages, frameworks, soft skills)
-- education: all degrees/diplomas/courses found
-- projects: personal, academic, and professional projects
-- certifications: all certifications, licenses, and professional credentials
-- summary: specific, professional, highlights the candidate's most impressive attributes
+- resumeScore: integer 0-100
+- skills: flat string array
+- education: all degrees/diplomas found
+- projects: personal, academic, professional projects
+- certifications: all certifications and professional credentials
+- summary: specific, professional, 2-3 sentences
 - If a section has no data, return an empty array []
-- Return ONLY the JSON object
+- Return ONLY the JSON object, no other text
 
 Resume text:
 ---
@@ -99,65 +174,76 @@ ${trimmed.slice(0, 14000)}
 ---`;
 
     // 4. Call Gemini
-    req.log.info("Calling Gemini API");
+    req.log.info("[analyze] Calling Gemini API");
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const result = await model.generateContent(prompt);
-    const raw = result.response.text().trim();
+    const rawText = result.response.text();
 
-    // Gemini 2.5 Flash is a thinking model — strip any <think>…</think> blocks
-    // that appear before the actual JSON output.
-    const withoutThinking = raw
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
+    // ── DEBUG: log FULL raw response ──────────────────────────────────────
+    req.log.info(
+      {
+        rawLength: rawText.length,
+        rawPreview: rawText.slice(0, 800),
+        rawFull: rawText,          // full text for server logs
+      },
+      "[analyze][DEBUG] Gemini raw response",
+    );
+    // ─────────────────────────────────────────────────────────────────────
 
-    // Strip markdown code fences if Gemini wraps output anyway
-    const stripped = withoutThinking
-      .replace(/^```json\s*/im, "")
-      .replace(/^```\s*/im, "")
-      .replace(/\s*```\s*$/im, "")
-      .trim();
+    // 5. Parse JSON with robust extractor
+    const extracted = extractJson(rawText);
 
-    let analysis: unknown;
-    // Primary attempt: parse the cleaned string directly
-    try {
-      analysis = JSON.parse(stripped);
-    } catch {
-      // Fallback: extract the JSON object by locating the outermost { … }
-      const start = stripped.indexOf("{");
-      const end = stripped.lastIndexOf("}");
-      if (start !== -1 && end > start) {
-        try {
-          analysis = JSON.parse(stripped.slice(start, end + 1));
-        } catch {
-          // fall through to error below
-        }
-      }
-    }
+    req.log.info(
+      {
+        extractionMethod: extracted?.method ?? "FAILED",
+        cleanedPreview: extracted?.cleaned?.slice(0, 300),
+        extractedKeys: extracted?.json && typeof extracted.json === "object"
+          ? Object.keys(extracted.json as object)
+          : null,
+      },
+      "[analyze][DEBUG] Extraction result",
+    );
 
-    if (analysis === undefined || analysis === null) {
-      req.log.error({ raw }, "Gemini returned non-JSON response");
+    if (!extracted) {
+      req.log.error({ rawText }, "[analyze] All JSON extraction attempts failed");
       res.status(500).json({
         error: "AI returned an unexpected format. Please try again.",
+        _debug: { rawText, extractionMethod: "FAILED" },
       });
       return;
     }
 
-    const a = analysis as Record<string, unknown>;
-    if (typeof a.resumeScore !== "number" || !Array.isArray(a.skills)) {
-      req.log.error({ analysis }, "Gemini response missing required fields");
-      res.status(500).json({
-        error: "AI analysis is incomplete. Please try again.",
-      });
-      return;
-    }
+    // 6. Normalise — guarantees shape even if Gemini omitted a field
+    const analysis = normalizeAnalysis(extracted.json);
 
-    req.log.info({ score: a.resumeScore }, "Resume analysis complete");
-    res.json({ analysis });
+    req.log.info(
+      {
+        score: analysis.resumeScore,
+        skillsCount: analysis.skills.length,
+        educationCount: analysis.education.length,
+        projectsCount: analysis.projects.length,
+        certificationsCount: analysis.certifications.length,
+        summaryLength: analysis.summary.length,
+      },
+      "[analyze] Resume analysis complete",
+    );
+
+    // Return analysis + debug payload so the frontend can inspect it
+    res.json({
+      analysis,
+      _debug: {
+        rawText,
+        rawLength: rawText.length,
+        extractionMethod: extracted.method,
+        cleanedText: extracted.cleaned,
+        parsedKeys: Object.keys(extracted.json && typeof extracted.json === "object" ? extracted.json as object : {}),
+      },
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Analysis failed";
-    req.log.error({ err }, "Resume analysis error");
+    req.log.error({ err }, "[analyze] Unhandled error in resume analysis");
     res.status(500).json({ error: message });
   }
 });
