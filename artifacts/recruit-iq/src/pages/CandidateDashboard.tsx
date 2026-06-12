@@ -162,6 +162,8 @@ export default function CandidateDashboard() {
   const [loadingCandidate, setLoadingCandidate] = useState(true);
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  // Shows "AI is busy. Retrying…" after the request has been in-flight for >12 s
+  const [isRetrying, setIsRetrying] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -221,7 +223,12 @@ export default function CandidateDashboard() {
   const analyzeResume = async () => {
     if (!candidate?.resume_url) return;
     setAnalyzing(true);
+    setIsRetrying(false);
     setAnalysisError("");
+
+    // After 12 s with no response, assume Gemini is retrying and update UI
+    const retryTimer = setTimeout(() => setIsRetrying(true), 12_000);
+
     try {
       console.group("[RecruitIQ] analyzeResume API call");
       console.log("resumeUrl:", candidate.resume_url);
@@ -235,9 +242,13 @@ export default function CandidateDashboard() {
       const data = await resp.json() as {
         analysis?: ResumeAnalysis;
         error?: string;
+        isHighDemand?: boolean;
         _debug?: {
           rawText: string;
           rawLength: number;
+          modelUsed: string;
+          attemptNumber: number;
+          totalAttempts: number;
           extractionMethod: string;
           cleanedText: string;
           parsedKeys: string[];
@@ -246,12 +257,16 @@ export default function CandidateDashboard() {
 
       console.log("HTTP status:", resp.status);
       console.log("Full API response:", data);
+      console.log("_debug.modelUsed:", data._debug?.modelUsed);
+      console.log("_debug.totalAttempts:", data._debug?.totalAttempts);
       console.log("_debug.rawText (first 800):", data._debug?.rawText?.slice(0, 800));
       console.log("_debug.extractionMethod:", data._debug?.extractionMethod);
       console.log("_debug.parsedKeys:", data._debug?.parsedKeys);
       console.log("analysis object:", data.analysis);
 
-      if (!resp.ok) throw new Error(data.error ?? "Analysis failed");
+      if (!resp.ok) {
+        throw new Error(data.error ?? "Analysis failed");
+      }
 
       const analysis = normalizeAnalysis(data.analysis);
       console.log("Normalised analysis:", analysis);
@@ -283,7 +298,9 @@ export default function CandidateDashboard() {
       console.groupEnd();
       setAnalysisError(err instanceof Error ? err.message : "Analysis failed. Please try again.");
     } finally {
+      clearTimeout(retryTimer);
       setAnalyzing(false);
+      setIsRetrying(false);
     }
   };
 
@@ -679,10 +696,34 @@ export default function CandidateDashboard() {
               {/* Analyzing skeleton */}
               {analyzing && (
                 <div className="space-y-4 py-2">
-                  <div className="flex items-center gap-3 mb-6">
-                    <Loader2 className="w-5 h-5 text-primary animate-spin" />
-                    <span className="text-sm text-muted-foreground">Reading your resume and generating AI insights…</span>
-                  </div>
+                  <AnimatePresence mode="wait">
+                    {isRetrying ? (
+                      <motion.div
+                        key="retrying"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="flex items-center gap-3 mb-6 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20"
+                      >
+                        <RefreshCw className="w-4 h-4 text-amber-400 animate-spin flex-shrink-0" />
+                        <div>
+                          <p className="text-sm font-medium text-amber-300">AI is busy. Retrying analysis…</p>
+                          <p className="text-xs text-amber-400/60 mt-0.5">Switching to a fallback model — this may take a few more seconds.</p>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="reading"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="flex items-center gap-3 mb-6"
+                      >
+                        <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                        <span className="text-sm text-muted-foreground">Reading your resume and generating AI insights…</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                   {[80, 60, 90, 50].map((w, i) => (
                     <div key={i} className="h-3 rounded-full bg-white/5 animate-pulse" style={{ width: `${w}%` }} />
                   ))}
