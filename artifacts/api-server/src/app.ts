@@ -38,7 +38,7 @@ app.use("/api", router);
 // Serve the built React frontend in production
 const frontendDist = path.resolve(__dirname, "../../recruit-iq/dist/public");
 app.use(express.static(frontendDist));
-app.get("*", (_req, res) => {
+app.get(/(.*)/, (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
 

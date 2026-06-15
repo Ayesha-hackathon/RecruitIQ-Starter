@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type InterviewPhase =
@@ -145,14 +146,18 @@ export default function AIInterview() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Load candidate from API
+  // Load candidate from Supabase
   useEffect(() => {
     if (!user) return;
-    fetch("/api/candidates/me")
-      .then((r) => r.json())
-      .then((data: { candidate?: Record<string, unknown> | null }) => {
-        const d = data.candidate;
-        if (d) {
+    supabase
+      .from("candidates")
+      .select("analysis, skill_gap_analysis")
+      .eq("user_id", user.id)
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          const d = data as Record<string, unknown>;
+          // Extract skills
           let rawAnalysis = d.analysis;
           if (typeof rawAnalysis === "string") {
             try { rawAnalysis = JSON.parse(rawAnalysis); } catch { rawAnalysis = null; }
@@ -161,6 +166,7 @@ export default function AIInterview() {
           const candidateSkills = Array.isArray(analysisObj.skills) ? analysisObj.skills.map(String) : [];
           setSkills(candidateSkills);
 
+          // Extract role from skill gap analysis
           const rawGap = d.skill_gap_analysis;
           if (rawGap && typeof rawGap === "object") {
             const g = rawGap as Record<string, unknown>;
@@ -169,7 +175,7 @@ export default function AIInterview() {
         }
         setCandidateLoaded(true);
         setPhase("setup");
-      }).catch(() => {
+      }, () => {
         setCandidateLoaded(true);
         setPhase("setup");
       });
@@ -339,14 +345,13 @@ export default function AIInterview() {
       setIsAiRetrying(false);
       setFinalEvaluation(data);
 
-      // Save interview result via API (non-fatal)
+      // Save to Supabase (gracefully — column may not exist yet)
       try {
-        await fetch("/api/candidates/me/interview-result", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ interviewResult: { ...data, role: selectedRole, questionsAnswered: finalHistory.length } }),
-        });
-      } catch { /* non-fatal */ }
+        await supabase
+          .from("candidates")
+          .update({ interview_result: { ...data, role: selectedRole, questionsAnswered: finalHistory.length } })
+          .eq("user_id", user!.id);
+      } catch { /* column may not exist yet — non-fatal */ }
 
       setPhase("complete");
     } catch (err: unknown) {
