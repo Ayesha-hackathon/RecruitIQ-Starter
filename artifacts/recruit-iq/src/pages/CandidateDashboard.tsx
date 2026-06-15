@@ -34,7 +34,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/context/AuthContext";
-import { supabase } from "@/lib/supabase";
 
 interface AnalysisEducation {
   degree: string;
@@ -165,8 +164,8 @@ function normalizeAnalysis(raw: unknown): ResumeAnalysis {
 
 // ─── Debug info type ─────────────────────────────────────────────────────────
 interface DebugInfo {
-  source: "api" | "supabase";
-  supabaseRaw: unknown;
+  source: "api";
+  supabaseRaw: null;
   apiRawText: string | null;
   apiCleanedText: string | null;
   apiExtractionMethod: string | null;
@@ -198,43 +197,24 @@ export default function CandidateDashboard() {
   useEffect(() => {
     if (!user) return;
     setLoadingCandidate(true);
-    console.group("[RecruitIQ] Supabase fetch — candidates");
-    console.log("user_id:", user.id);
-    supabase
-      .from("candidates")
-      .select("resume_url, resume_filename, analysis")
-      .eq("user_id", user.id)
-      .single()
-      .then(async ({ data, error }) => {
-        console.log("Supabase response →", { data, error });
-        if (data) {
-          const row = data as { resume_url: string | null; resume_filename: string | null; analysis: unknown };
-          console.log("raw.analysis type:", typeof row.analysis);
-          console.log("raw.analysis value:", row.analysis);
-
-          // If Supabase returns the JSON column as a string (json type vs jsonb), parse it first
+    fetch("/api/candidates/me")
+      .then((r) => r.json())
+      .then((data: { candidate?: Record<string, unknown> | null }) => {
+        const row = data.candidate;
+        if (row) {
           let rawObj: unknown = row.analysis;
           if (typeof rawObj === "string" && rawObj.trim().length > 0) {
             try { rawObj = JSON.parse(rawObj); } catch { rawObj = null; }
           }
-          console.log("After string-parse:", rawObj);
-
-          // Handle double-nesting: { analysis: { skills, ... } } → unwrap
           if (rawObj && typeof rawObj === "object") {
             const maybe = (rawObj as Record<string, unknown>).analysis;
-            if (maybe && typeof maybe === "object") {
-              console.log("Detected nested analysis key — unwrapping");
-              rawObj = maybe;
-            }
+            if (maybe && typeof maybe === "object") rawObj = maybe;
           }
-          console.log("Pre-normalise:", rawObj);
-
           const analysis = rawObj ? normalizeAnalysis(rawObj) : null;
-          console.log("Normalised analysis:", analysis);
 
           setDebugInfo({
-            source: "supabase",
-            supabaseRaw: row.analysis,
+            source: "api",
+            supabaseRaw: null,
             apiRawText: null,
             apiCleanedText: null,
             apiExtractionMethod: null,
@@ -242,40 +222,33 @@ export default function CandidateDashboard() {
             finalAnalysis: analysis,
           });
 
-          // Try to load saved skill gap analysis — gracefully handles missing column
           let savedGap: SkillGapResult | null = null;
-          try {
-            const { data: gapData } = await supabase
-              .from("candidates")
-              .select("skill_gap_analysis")
-              .eq("user_id", user.id)
-              .single();
-            const rawGap = (gapData as Record<string, unknown> | null)?.skill_gap_analysis;
-            if (rawGap && typeof rawGap === "object") {
-              const g = rawGap as Record<string, unknown>;
-              const strArr = (v: unknown) => Array.isArray(v) ? v.map(String) : [];
-              savedGap = {
-                role:            typeof g.role === "string" ? g.role : "",
-                matchedSkills:   strArr(g.matchedSkills),
-                missingSkills:   strArr(g.missingSkills),
-                readinessScore:  typeof g.readinessScore === "number" ? g.readinessScore : 0,
-                recommendations: strArr(g.recommendations),
-                analyzedAt:      typeof g.analyzedAt === "string" ? g.analyzedAt : "",
-              };
-              setSkillGapResult(savedGap);
-              if (savedGap.role) setSelectedRole(savedGap.role);
-            }
-          } catch {
-            console.log("[RecruitIQ] skill_gap_analysis column not yet available — run migration SQL");
+          const rawGap = row.skill_gap_analysis;
+          if (rawGap && typeof rawGap === "object") {
+            const g = rawGap as Record<string, unknown>;
+            const strArr = (v: unknown) => Array.isArray(v) ? v.map(String) : [];
+            savedGap = {
+              role:            typeof g.role === "string" ? g.role : "",
+              matchedSkills:   strArr(g.matchedSkills),
+              missingSkills:   strArr(g.missingSkills),
+              readinessScore:  typeof g.readinessScore === "number" ? g.readinessScore : 0,
+              recommendations: strArr(g.recommendations),
+              analyzedAt:      typeof g.analyzedAt === "string" ? g.analyzedAt : "",
+            };
+            setSkillGapResult(savedGap);
+            if (savedGap.role) setSelectedRole(savedGap.role);
           }
 
-          setCandidate({ resume_url: row.resume_url, resume_filename: row.resume_filename, analysis, skill_gap_analysis: savedGap });
-        } else {
-          console.warn("No candidate row found:", error?.message);
+          setCandidate({
+            resume_url: typeof row.resume_url === "string" ? row.resume_url : null,
+            resume_filename: typeof row.resume_filename === "string" ? row.resume_filename : null,
+            analysis,
+            skill_gap_analysis: savedGap,
+          });
         }
         setLoadingCandidate(false);
-        console.groupEnd();
-      });
+      })
+      .catch(() => setLoadingCandidate(false));
   }, [user]);
 
   const analyzeResume = async () => {
@@ -330,15 +303,15 @@ export default function CandidateDashboard() {
       console.log("Normalised analysis:", analysis);
       console.groupEnd();
 
-      // Persist to Supabase
-      const { error: upsertError } = await supabase
-        .from("candidates")
-        .update({ analysis })
-        .eq("user_id", user!.id);
-      if (upsertError) {
-        console.error("[RecruitIQ] Supabase update error:", upsertError);
-      } else {
-        console.log("[RecruitIQ] Supabase update success");
+      // Persist analysis via API
+      try {
+        await fetch("/api/candidates/me/analysis", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ analysis }),
+        });
+      } catch (upsertError) {
+        console.error("[RecruitIQ] Failed to save analysis:", upsertError);
       }
 
       setDebugInfo({
@@ -386,12 +359,16 @@ export default function CandidateDashboard() {
       const result = data.result!;
       setSkillGapResult(result);
 
-      // Persist to Supabase
-      const { error: dbErr } = await supabase
-        .from("candidates")
-        .update({ skill_gap_analysis: result })
-        .eq("user_id", user!.id);
-      if (dbErr) console.error("[RecruitIQ] Failed to save skill gap:", dbErr);
+      // Persist skill gap via API
+      try {
+        await fetch("/api/candidates/me/skill-gap", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skillGapAnalysis: result }),
+        });
+      } catch (dbErr) {
+        console.error("[RecruitIQ] Failed to save skill gap:", dbErr);
+      }
     } catch (err: unknown) {
       setSkillGapError(err instanceof Error ? err.message : "Analysis failed. Please try again.");
     } finally {
@@ -401,11 +378,8 @@ export default function CandidateDashboard() {
     }
   };
 
-  const displayName =
-    user?.user_metadata?.full_name ||
-    user?.email?.split("@")[0] ||
-    "Account";
-  const displayEmail = user?.email ?? "";
+  const displayName = user?.name || "Account";
+  const displayEmail = "";
 
   // Real AI score wired to the top stat card
   const realScore = candidate?.analysis?.resumeScore ?? null;

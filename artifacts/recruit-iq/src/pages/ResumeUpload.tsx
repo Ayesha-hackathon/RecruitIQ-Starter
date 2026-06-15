@@ -16,7 +16,6 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 
 // Upload → AI analysis → done (redirect). No fake data anywhere.
@@ -118,7 +117,8 @@ export default function ResumeUpload() {
   };
 
   // ─── Phase 2: Gemini analysis ─────────────────────────────────────────────
-  const runAnalysis = async (resumeUrl: string) => {
+  const runAnalysis = async (resumeUrl: string, analysisArg?: ResumeAnalysis) => {
+    void analysisArg;
     setUploadState("analyzing");
     setAnalysisProgress(0);
     setIsAiRetrying(false);
@@ -153,15 +153,15 @@ export default function ResumeUpload() {
 
       const analysis = normalizeAnalysis(data.analysis);
 
-      // Save analysis to Supabase so the dashboard loads it immediately
-      const { error: dbErr } = await supabase
-        .from("candidates")
-        .update({ analysis })
-        .eq("user_id", user!.id);
-
-      if (dbErr) {
-        console.error("[RecruitIQ] Failed to save analysis to Supabase:", dbErr);
-        // Non-fatal — dashboard can still re-analyze
+      // Save analysis via API
+      try {
+        await fetch("/api/candidates/me/analysis", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ analysis }),
+        });
+      } catch (dbErr) {
+        console.error("[RecruitIQ] Failed to save analysis:", dbErr);
       }
 
       // Jump progress to 100 then redirect
@@ -214,34 +214,29 @@ export default function ResumeUpload() {
     }, 120);
 
     try {
-      const filePath = `${user.id}/resume.pdf`;
-      console.info("[RecruitIQ] Uploading:", filePath);
+      const formData = new FormData();
+      formData.append("resume", file);
 
-      const { error: storageError } = await supabase.storage
-        .from("resumes")
-        .upload(filePath, file, { cacheControl: "3600", upsert: true, contentType: "application/pdf" });
+      console.info("[RecruitIQ] Uploading via API");
+      const uploadResp = await fetch("/api/upload-resume", {
+        method: "POST",
+        body: formData,
+      });
 
-      if (storageError) throw storageError;
+      if (!uploadResp.ok) {
+        const err = await uploadResp.json() as { error?: string };
+        throw new Error(err.error ?? "Upload failed");
+      }
 
-      const { data: { publicUrl } } = supabase.storage.from("resumes").getPublicUrl(filePath);
-      console.info("[RecruitIQ] Public URL:", publicUrl);
-
-      const { error: dbError } = await supabase
-        .from("candidates")
-        .upsert(
-          { user_id: user.id, resume_url: publicUrl, resume_path: filePath, resume_filename: file.name, uploaded_at: new Date().toISOString() },
-          { onConflict: "user_id" },
-        );
-
-      if (dbError) throw dbError;
-      console.info("[RecruitIQ] Candidate row upserted.");
+      const { resumeUrl } = await uploadResp.json() as { resumeUrl: string };
+      console.info("[RecruitIQ] Resume URL:", resumeUrl);
 
       clearAll();
       setUploadProgress(100);
 
       // Small pause so the user sees 100%, then kick off AI analysis
       await new Promise((r) => setTimeout(r, 400));
-      await runAnalysis(publicUrl);
+      await runAnalysis(resumeUrl);
     } catch (err: unknown) {
       clearAll();
       console.error("[RecruitIQ] Upload error:", err);

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { loginUrl } from "@/lib/auth";
 
 interface Props {
   children: React.ReactNode;
@@ -13,7 +14,7 @@ export function ProtectedRoute({ children }: Props) {
 
   useEffect(() => {
     if (!loading && !user) {
-      setLocation("/login");
+      window.location.href = loginUrl();
     }
   }, [loading, user, setLocation]);
 
