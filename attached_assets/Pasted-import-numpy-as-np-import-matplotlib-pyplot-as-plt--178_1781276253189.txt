@@ -1,0 +1,160 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ------------------------------------------
+# Perfect IEEE Fig. 6 (Fixed Legend Overlap)
+# ------------------------------------------
+
+plt.rcParams['font.family'] = 'Times New Roman'
+
+# Models
+models = ['ANN', 'LSTM', 'Transformer', 'NSDTI']
+
+# Data
+energy_efficiency = [85.3, 89.1, 92.6, 96.8]
+response_time = [210, 172, 141, 106]
+
+x = np.arange(len(models))
+width = 0.22
+
+# ------------------------------------------
+# Figure Setup
+# ------------------------------------------
+
+fig, ax1 = plt.subplots(figsize=(12, 7))
+
+plt.subplots_adjust(
+    left=0.10,
+    right=0.90,
+    bottom=0.15,
+    top=0.82   # extra space for top legend
+)
+
+# ------------------------------------------
+# Left Axis - Energy Efficiency
+# ------------------------------------------
+
+bars1 = ax1.bar(
+    x - 0.18,
+    energy_efficiency,
+    width,
+    label='Energy Efficiency (%)'
+)
+
+ax1.set_ylabel(
+    'Energy Efficiency (%)',
+    fontsize=16,
+    fontweight='bold'
+)
+
+ax1.set_xlabel(
+    'Prediction Models',
+    fontsize=16,
+    fontweight='bold'
+)
+
+ax1.set_ylim(75, 102)
+
+ax1.set_xticks(x)
+ax1.set_xticklabels(
+    models,
+    fontsize=14,
+    fontweight='bold'
+)
+
+ax1.tick_params(
+    axis='y',
+    labelsize=12
+)
+
+# ------------------------------------------
+# Right Axis - Response Time
+# ------------------------------------------
+
+ax2 = ax1.twinx()
+
+bars2 = ax2.bar(
+    x + 0.18,
+    response_time,
+    width,
+    label='Response Time (ms)'
+)
+
+ax2.set_ylabel(
+    'Response Time (ms)',
+    fontsize=16,
+    fontweight='bold'
+)
+
+ax2.set_ylim(80, 240)
+
+ax2.tick_params(
+    axis='y',
+    labelsize=12
+)
+
+# ------------------------------------------
+# Value Labels (No Overlap)
+# ------------------------------------------
+
+for bar in bars1:
+    height = bar.get_height()
+    ax1.text(
+        bar.get_x() + bar.get_width()/2,
+        height + 0.4,
+        f'{height:.1f}',
+        ha='center',
+        fontsize=11
+    )
+
+for bar in bars2:
+    height = bar.get_height()
+    ax2.text(
+        bar.get_x() + bar.get_width()/2,
+        height + 3,
+        f'{int(height)}',
+        ha='center',
+        fontsize=11
+    )
+
+# ------------------------------------------
+# Grid
+# ------------------------------------------
+
+ax1.grid(
+    True,
+    linestyle='--',
+    linewidth=0.8,
+    alpha=0.7
+)
+
+# ------------------------------------------
+# Top Legend (No Overlap)
+# ------------------------------------------
+
+handles1, labels1 = ax1.get_legend_handles_labels()
+handles2, labels2 = ax2.get_legend_handles_labels()
+
+legend = ax1.legend(
+    handles1 + handles2,
+    labels1 + labels2,
+    loc='upper center',
+    bbox_to_anchor=(0.5, 1.12),
+    ncol=2,
+    fontsize=13,
+    frameon=True
+)
+
+legend.get_frame().set_linewidth(1.2)
+
+# ------------------------------------------
+# Save High Resolution
+# ------------------------------------------
+
+plt.savefig(
+    'Fig6_Final_IEEE.png',
+    dpi=800,
+    bbox_inches='tight'
+)
+
+plt.show()

@@ -730,14 +730,14 @@ export default function CandidateDashboard() {
                 </div>
               )}
 
-              {/* Has resume but not yet analyzed */}
+              {/* Has resume but no analysis yet — prompt to re-analyze */}
               {candidate?.resume_url && !hasValidAnalysis && !analyzing && (
                 <div className="text-center py-10">
                   <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
                     <Brain className="w-6 h-6 text-primary" />
                   </div>
-                  <p className="text-white font-medium mb-1">Ready to analyze</p>
-                  <p className="text-sm text-muted-foreground">Click "Analyze Resume" above to get your AI-powered breakdown</p>
+                  <p className="text-white font-medium mb-1">Analysis not found</p>
+                  <p className="text-sm text-muted-foreground mb-4">Click <span className="text-white font-medium">Re-analyze</span> above to generate your AI-powered breakdown</p>
                 </div>
               )}
 
