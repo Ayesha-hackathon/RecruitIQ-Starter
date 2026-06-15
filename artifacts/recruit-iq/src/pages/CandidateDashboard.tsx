@@ -27,6 +27,9 @@ import {
   AlertCircle,
   Loader2,
   RefreshCw,
+  ChevronDown,
+  Lightbulb,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -53,11 +56,31 @@ interface ResumeAnalysis {
   summary: string;
 }
 
+interface SkillGapResult {
+  role: string;
+  matchedSkills: string[];
+  missingSkills: string[];
+  readinessScore: number;
+  recommendations: string[];
+  analyzedAt: string;
+}
+
 interface CandidateRecord {
   resume_url: string | null;
   resume_filename: string | null;
   analysis: ResumeAnalysis | null;
+  skill_gap_analysis: SkillGapResult | null;
 }
+
+const ROLES = [
+  "AI Engineer",
+  "Machine Learning Engineer",
+  "Data Scientist",
+  "Frontend Developer",
+  "Backend Developer",
+  "Full Stack Developer",
+  "DevOps Engineer",
+] as const;
 
 const navItems = [
   { label: "Dashboard", icon: <LayoutDashboard className="w-4 h-4" />, href: "/candidate-dashboard" },
@@ -165,6 +188,13 @@ export default function CandidateDashboard() {
   // Shows "AI is busy. Retrying…" after the request has been in-flight for >12 s
   const [isRetrying, setIsRetrying] = useState(false);
 
+  // ── Skill Gap state ──
+  const [selectedRole, setSelectedRole] = useState<string>(ROLES[0]);
+  const [skillGapResult, setSkillGapResult] = useState<SkillGapResult | null>(null);
+  const [skillGapLoading, setSkillGapLoading] = useState(false);
+  const [skillGapError, setSkillGapError] = useState("");
+  const [skillGapRetrying, setSkillGapRetrying] = useState(false);
+
   useEffect(() => {
     if (!user) return;
     setLoadingCandidate(true);
@@ -175,7 +205,7 @@ export default function CandidateDashboard() {
       .select("resume_url, resume_filename, analysis")
       .eq("user_id", user.id)
       .single()
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         console.log("Supabase response →", { data, error });
         if (data) {
           const row = data as { resume_url: string | null; resume_filename: string | null; analysis: unknown };
@@ -211,7 +241,35 @@ export default function CandidateDashboard() {
             apiParsedKeys: null,
             finalAnalysis: analysis,
           });
-          setCandidate({ resume_url: row.resume_url, resume_filename: row.resume_filename, analysis });
+
+          // Try to load saved skill gap analysis — gracefully handles missing column
+          let savedGap: SkillGapResult | null = null;
+          try {
+            const { data: gapData } = await supabase
+              .from("candidates")
+              .select("skill_gap_analysis")
+              .eq("user_id", user.id)
+              .single();
+            const rawGap = (gapData as Record<string, unknown> | null)?.skill_gap_analysis;
+            if (rawGap && typeof rawGap === "object") {
+              const g = rawGap as Record<string, unknown>;
+              const strArr = (v: unknown) => Array.isArray(v) ? v.map(String) : [];
+              savedGap = {
+                role:            typeof g.role === "string" ? g.role : "",
+                matchedSkills:   strArr(g.matchedSkills),
+                missingSkills:   strArr(g.missingSkills),
+                readinessScore:  typeof g.readinessScore === "number" ? g.readinessScore : 0,
+                recommendations: strArr(g.recommendations),
+                analyzedAt:      typeof g.analyzedAt === "string" ? g.analyzedAt : "",
+              };
+              setSkillGapResult(savedGap);
+              if (savedGap.role) setSelectedRole(savedGap.role);
+            }
+          } catch {
+            console.log("[RecruitIQ] skill_gap_analysis column not yet available — run migration SQL");
+          }
+
+          setCandidate({ resume_url: row.resume_url, resume_filename: row.resume_filename, analysis, skill_gap_analysis: savedGap });
         } else {
           console.warn("No candidate row found:", error?.message);
         }
@@ -301,6 +359,45 @@ export default function CandidateDashboard() {
       clearTimeout(retryTimer);
       setAnalyzing(false);
       setIsRetrying(false);
+    }
+  };
+
+  const analyzeSkillGap = async () => {
+    const skills = candidate?.analysis?.skills;
+    if (!skills || skills.length === 0) return;
+
+    setSkillGapLoading(true);
+    setSkillGapError("");
+    setSkillGapRetrying(false);
+
+    const retryTimer = setTimeout(() => setSkillGapRetrying(true), 12_000);
+
+    try {
+      const resp = await fetch("/api/skill-gap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skills, role: selectedRole }),
+      });
+
+      const data = await resp.json() as { result?: SkillGapResult; error?: string; isHighDemand?: boolean };
+
+      if (!resp.ok) throw new Error(data.error ?? "Skill gap analysis failed");
+
+      const result = data.result!;
+      setSkillGapResult(result);
+
+      // Persist to Supabase
+      const { error: dbErr } = await supabase
+        .from("candidates")
+        .update({ skill_gap_analysis: result })
+        .eq("user_id", user!.id);
+      if (dbErr) console.error("[RecruitIQ] Failed to save skill gap:", dbErr);
+    } catch (err: unknown) {
+      setSkillGapError(err instanceof Error ? err.message : "Analysis failed. Please try again.");
+    } finally {
+      clearTimeout(retryTimer);
+      setSkillGapLoading(false);
+      setSkillGapRetrying(false);
     }
   };
 
@@ -1020,6 +1117,273 @@ export default function CandidateDashboard() {
 
             </div>
           </motion.div>
+
+          {/* ─── Skill Gap Analysis section ─────────────────────────────────── */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.7 }}
+            className="rounded-2xl border border-white/5 overflow-hidden"
+          >
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-6 py-5 bg-gradient-to-r from-violet-500/10 via-primary/5 to-transparent border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-violet-500/15 border border-violet-500/20 flex items-center justify-center flex-shrink-0">
+                  <Target className="w-4 h-4 text-violet-400" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-white font-[Space_Grotesk]">Skill Gap Analysis</h2>
+                  <p className="text-xs text-muted-foreground">Powered by Gemini</p>
+                </div>
+              </div>
+
+              {/* Role selector + action button */}
+              {hasValidAnalysis && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="relative">
+                    <select
+                      value={selectedRole}
+                      onChange={(e) => {
+                        setSelectedRole(e.target.value);
+                        setSkillGapResult(null);
+                        setSkillGapError("");
+                      }}
+                      disabled={skillGapLoading}
+                      className="appearance-none h-9 pl-3 pr-8 rounded-lg bg-white/[0.04] border border-white/10 text-sm text-white focus:outline-none focus:border-violet-500/50 disabled:opacity-50 cursor-pointer"
+                    >
+                      {ROLES.map((r) => (
+                        <option key={r} value={r} className="bg-[#0d0d12] text-white">{r}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                  <Button
+                    onClick={analyzeSkillGap}
+                    disabled={skillGapLoading}
+                    className="h-9 px-4 text-sm bg-violet-600 hover:bg-violet-500 text-white font-semibold gap-2 disabled:opacity-60"
+                  >
+                    {skillGapLoading ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing…</>
+                    ) : skillGapResult ? (
+                      <><RefreshCw className="w-4 h-4" /> Re-analyze</>
+                    ) : (
+                      <><Zap className="w-4 h-4" /> Analyze Skill Gap</>
+                    )}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-card/30 p-6 space-y-6">
+
+              {/* No resume analyzed yet */}
+              {!hasValidAnalysis && (
+                <div className="text-center py-10">
+                  <div className="w-14 h-14 rounded-2xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center mx-auto mb-4">
+                    <Target className="w-6 h-6 text-violet-400" />
+                  </div>
+                  <p className="text-white font-medium mb-1">Analyze your resume first</p>
+                  <p className="text-sm text-muted-foreground">Run the AI Resume Analyzer above to unlock skill gap analysis</p>
+                </div>
+              )}
+
+              {/* Error */}
+              <AnimatePresence>
+                {skillGapError && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="flex items-start gap-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20"
+                  >
+                    <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+                    <p className="text-sm text-red-300">{skillGapError}</p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Loading skeleton */}
+              {skillGapLoading && (
+                <div className="space-y-4">
+                  <AnimatePresence mode="wait">
+                    {skillGapRetrying ? (
+                      <motion.div
+                        key="retrying"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20"
+                      >
+                        <RefreshCw className="w-4 h-4 text-amber-400 animate-spin flex-shrink-0" />
+                        <div>
+                          <p className="text-sm font-medium text-amber-300">AI is busy. Retrying analysis…</p>
+                          <p className="text-xs text-amber-400/60 mt-0.5">Switching to a fallback model.</p>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="loading"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="flex items-center gap-3"
+                      >
+                        <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
+                        <span className="text-sm text-muted-foreground">Comparing your skills against <span className="text-white font-medium">{selectedRole}</span> requirements…</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  {[70, 50, 80, 40].map((w, i) => (
+                    <div key={i} className="h-3 rounded-full bg-white/5 animate-pulse" style={{ width: `${w}%` }} />
+                  ))}
+                </div>
+              )}
+
+              {/* Empty prompt — has analysis but hasn't run gap yet */}
+              {hasValidAnalysis && !skillGapResult && !skillGapLoading && (
+                <div className="text-center py-8">
+                  <div className="w-14 h-14 rounded-2xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center mx-auto mb-4">
+                    <Zap className="w-6 h-6 text-violet-400" />
+                  </div>
+                  <p className="text-white font-medium mb-1">Ready to analyze</p>
+                  <p className="text-sm text-muted-foreground">Select a target role and click <span className="text-white font-medium">Analyze Skill Gap</span> to see what skills you have and what you're missing</p>
+                </div>
+              )}
+
+              {/* Results */}
+              {skillGapResult && !skillGapLoading && (() => {
+                const score = skillGapResult.readinessScore;
+                const scoreLabel = score >= 80 ? "Highly Ready" : score >= 60 ? "Mostly Ready" : score >= 40 ? "Partially Ready" : "Needs Work";
+                const scoreColor = score >= 80 ? "text-emerald-400" : score >= 60 ? "text-cyan-400" : score >= 40 ? "text-amber-400" : "text-red-400";
+                const scoreRingColor = score >= 80 ? "hsl(160 84% 39%)" : score >= 60 ? "hsl(198 93% 60%)" : score >= 40 ? "hsl(48 96% 53%)" : "hsl(0 72% 51%)";
+                const scoreBarColor = score >= 80 ? "from-emerald-500 to-teal-400" : score >= 60 ? "from-cyan-500 to-blue-400" : score >= 40 ? "from-amber-500 to-yellow-400" : "from-red-500 to-rose-400";
+                const circumference = 2 * Math.PI * 40;
+
+                return (
+                  <div className="space-y-6">
+                    {/* Role tag */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Analysis for</span>
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 text-xs font-medium text-violet-300">{skillGapResult.role}</span>
+                      {skillGapResult.analyzedAt && (
+                        <span className="text-xs text-muted-foreground ml-auto hidden sm:block">
+                          {new Date(skillGapResult.analyzedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Score + Skills row */}
+                    <div className="grid md:grid-cols-3 gap-4">
+                      {/* Readiness score gauge */}
+                      <div className="rounded-2xl bg-gradient-to-br from-white/[0.04] to-white/[0.01] border border-white/8 p-6 flex flex-col items-center justify-center text-center gap-3">
+                        <svg width="100" height="100" className="-rotate-90">
+                          <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
+                          <motion.circle
+                            cx="50" cy="50" r="40" fill="none"
+                            stroke={scoreRingColor} strokeWidth="8"
+                            strokeLinecap="round"
+                            strokeDasharray={circumference}
+                            initial={{ strokeDashoffset: circumference }}
+                            animate={{ strokeDashoffset: circumference - (score / 100) * circumference }}
+                            transition={{ duration: 1.2, ease: "easeOut" }}
+                          />
+                        </svg>
+                        <div className="-mt-4">
+                          <div className={`text-3xl font-bold font-[Space_Grotesk] ${scoreColor}`}>{score}</div>
+                          <div className="text-xs text-muted-foreground">/100</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-white">Role Readiness</div>
+                          <div className={`text-xs font-medium mt-0.5 ${scoreColor}`}>{scoreLabel}</div>
+                        </div>
+                        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                          <motion.div
+                            className={`h-full rounded-full bg-gradient-to-r ${scoreBarColor}`}
+                            initial={{ width: 0 }}
+                            animate={{ width: `${score}%` }}
+                            transition={{ duration: 1.2, ease: "easeOut" }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Matched + Missing skills */}
+                      <div className="md:col-span-2 space-y-4">
+                        {/* Matched */}
+                        <div className="rounded-2xl bg-gradient-to-br from-white/[0.04] to-white/[0.01] border border-white/8 p-5">
+                          <div className="flex items-center gap-2 mb-3">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            <span className="text-sm font-semibold text-white">Matched Skills</span>
+                            <span className="ml-auto text-xs font-medium text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-full">{skillGapResult.matchedSkills.length}</span>
+                          </div>
+                          {skillGapResult.matchedSkills.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {skillGapResult.matchedSkills.map((skill) => (
+                                <span key={skill} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
+                                  <CheckCircle2 className="w-3 h-3" /> {skill}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground italic">No direct matches found.</p>
+                          )}
+                        </div>
+
+                        {/* Missing */}
+                        <div className="rounded-2xl bg-gradient-to-br from-white/[0.04] to-white/[0.01] border border-white/8 p-5">
+                          <div className="flex items-center gap-2 mb-3">
+                            <AlertCircle className="w-4 h-4 text-red-400" />
+                            <span className="text-sm font-semibold text-white">Missing Skills</span>
+                            <span className="ml-auto text-xs font-medium text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">{skillGapResult.missingSkills.length}</span>
+                          </div>
+                          {skillGapResult.missingSkills.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {skillGapResult.missingSkills.map((skill) => (
+                                <span key={skill} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/10 border border-red-500/20 text-red-300">
+                                  <X className="w-3 h-3" /> {skill}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground italic">No critical gaps found — great coverage!</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Learning recommendations */}
+                    {skillGapResult.recommendations.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-2 mb-4">
+                          <Lightbulb className="w-4 h-4 text-amber-400" />
+                          <h3 className="text-sm font-semibold text-white">Learning Recommendations</h3>
+                        </div>
+                        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {skillGapResult.recommendations.map((rec, i) => (
+                            <motion.div
+                              key={i}
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: 0.1 * i }}
+                              className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/15 hover:border-amber-500/30 transition-colors"
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                  <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                                </div>
+                                <p className="text-sm text-muted-foreground leading-relaxed">{rec}</p>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </motion.div>
+          {/* ─── end Skill Gap Analysis ─────────────────────────────────────── */}
+
         </main>
       </div>
     </div>
