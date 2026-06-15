@@ -85,8 +85,8 @@ const ROLES = [
 const navItems = [
   { label: "Dashboard", icon: <LayoutDashboard className="w-4 h-4" />, href: "/candidate-dashboard" },
   { label: "Resume Upload", icon: <Upload className="w-4 h-4" />, href: "/resume-upload" },
+  { label: "AI Interview", icon: <MessageSquare className="w-4 h-4" />, href: "/ai-interview" },
   { label: "My Applications", icon: <BriefcaseBusiness className="w-4 h-4" />, href: "#" },
-  { label: "Interviews", icon: <MessageSquare className="w-4 h-4" />, href: "#" },
   { label: "Settings", icon: <Settings className="w-4 h-4" />, href: "#" },
 ];
 
@@ -1383,6 +1383,37 @@ export default function CandidateDashboard() {
             </div>
           </motion.div>
           {/* ─── end Skill Gap Analysis ─────────────────────────────────────── */}
+
+          {/* ─── AI Interview CTA ────────────────────────────────────────────── */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+            className="rounded-2xl overflow-hidden border border-primary/20 bg-gradient-to-br from-primary/10 via-violet-500/5 to-transparent"
+          >
+            <div className="p-6 flex flex-col sm:flex-row items-start sm:items-center gap-6">
+              <div className="w-14 h-14 rounded-2xl bg-primary/15 border border-primary/20 flex items-center justify-center flex-shrink-0">
+                <BrainCircuit className="w-7 h-7 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-bold text-white font-[Space_Grotesk] mb-1">AI Interview Agent</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Practice with adaptive technical questions powered by Gemini AI. Difficulty adjusts in real time based on your answers — 10 questions, instant scoring.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {["Adaptive difficulty", "Real-time feedback", "Comprehensive scoring"].map((f) => (
+                    <span key={f} className="px-2.5 py-0.5 rounded-full text-[11px] bg-white/5 border border-white/10 text-muted-foreground">{f}</span>
+                  ))}
+                </div>
+              </div>
+              <Link href="/ai-interview" className="flex-shrink-0">
+                <Button className="h-11 px-6 bg-primary hover:bg-primary/90 text-black font-semibold gap-2 whitespace-nowrap">
+                  <Zap className="w-4 h-4" /> Start Interview
+                </Button>
+              </Link>
+            </div>
+          </motion.div>
+          {/* ─── end AI Interview CTA ─────────────────────────────────────────── */}
 
         </main>
       </div>

@@ -12,6 +12,7 @@ import Signup from "@/pages/Signup";
 import CandidateDashboard from "@/pages/CandidateDashboard";
 import HrDashboard from "@/pages/HrDashboard";
 import ResumeUpload from "@/pages/ResumeUpload";
+import AIInterview from "@/pages/AIInterview";
 
 const queryClient = new QueryClient();
 
@@ -30,6 +31,11 @@ function Router() {
       <Route path="/resume-upload">
         <ProtectedRoute>
           <ResumeUpload />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/ai-interview">
+        <ProtectedRoute>
+          <AIInterview />
         </ProtectedRoute>
       </Route>
       <Route component={NotFound} />
